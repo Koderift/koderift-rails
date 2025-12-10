@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require 'active_support/concern'
+require 'koderift/rails/instrumentation'
+
 module Koderift
   module Rails
     module Controller

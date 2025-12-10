@@ -2,6 +2,9 @@
 
 require 'koderift/rails/version'
 require 'koderift/rails/configuration'
+require 'koderift/rails/instrumentation'
+require 'koderift/rails/lograge_config'
+require 'koderift/rails/controller'
 require 'koderift/rails/railtie' if defined?(::Rails::Railtie)
 
 module Koderift
