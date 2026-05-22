@@ -3,6 +3,9 @@
 module Koderift
   module Rails
     module LogrageConfig
+      MAX_FRAMES     = 50
+      LEADING_FRAMES = 10
+
       def self.apply(app)
         return unless defined?(Lograge)
 
@@ -23,6 +26,7 @@ module Koderift
             user_agent:    event.payload[:koderift_user_agent],
             allocations:   event.payload[:allocations],
             error_cause:   exceptions&.cause&.message,
+            stack_trace:   format_backtrace(exceptions),
             referer:       event.payload[:koderift_referer],
             breadcrumbs:   event.payload[:koderift_breadcrumbs],
             params:        event.payload[:koderift_params],
@@ -30,6 +34,27 @@ module Koderift
             query_stats:   event.payload[:koderift_query_stats]
           }.compact
         end
+      end
+
+      def self.format_backtrace(exception)
+        return nil unless exception&.backtrace&.any?
+
+        backtrace = exception.backtrace
+
+        leading = backtrace.first(LEADING_FRAMES)
+
+        rest = backtrace[LEADING_FRAMES..]&.select { |l| l.include?('/app/') } || []
+
+        frames = (leading + rest).first(MAX_FRAMES)
+
+        if frames.size < MAX_FRAMES
+          non_app_rest = backtrace[LEADING_FRAMES..]&.reject { |l| l.include?('/app/') } || []
+          frames = (frames + non_app_rest).first(MAX_FRAMES)
+        end
+
+        frames.join("\n").presence
+      rescue StandardError
+        nil
       end
     end
   end
