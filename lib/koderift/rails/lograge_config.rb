@@ -30,8 +30,9 @@ module Koderift
             referer:       event.payload[:koderift_referer],
             breadcrumbs:   event.payload[:koderift_breadcrumbs],
             params:        event.payload[:koderift_params],
-            slow_partials: event.payload[:koderift_slow_partials],
-            query_stats:   event.payload[:koderift_query_stats]
+            slow_partials:  event.payload[:koderift_slow_partials],
+            query_stats:    event.payload[:koderift_query_stats],
+            external_calls: event.payload[:koderift_external_calls]
           }.compact
         end
       end

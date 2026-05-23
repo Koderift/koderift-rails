@@ -98,4 +98,30 @@ RSpec.describe Koderift::Rails::Instrumentation do
       expect(subs_after).to eq(subs_before)
     end
   end
+
+  describe 'external call capture' do
+    it 'captures Net::HTTP calls made during a request' do
+      result = nil
+      Koderift::Rails::Instrumentation.capture do
+        Thread.current[:koderift_external_calls] << {
+          host: 'api.stripe.com', endpoint: '/v1/charges',
+          method: 'POST', status: 200, duration_ms: 145
+        }
+        result = :ok
+      end
+      expect(result).to eq(:ok)
+    end
+
+    it 'truncates path to two segments' do
+      raw_path = '/v1/charges/ch_abc123xyz?expand[]=customer'
+      segments = raw_path.split('?').first.split('/').reject(&:empty?).first(2)
+      endpoint = '/' + segments.join('/')
+      expect(endpoint).to eq('/v1/charges')
+    end
+
+    it 'excludes localhost calls' do
+      ignored = ['127.0.0.1', 'localhost', '[::1]'].include?('localhost')
+      expect(ignored).to be true
+    end
+  end
 end

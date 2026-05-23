@@ -24,6 +24,13 @@ module Koderift
       # Maximum number of slow queries to capture per request.
       attr_accessor :max_slow_queries
 
+      # Maximum number of external HTTP calls to capture per request.
+      attr_accessor :max_external_calls
+
+      # Hosts to exclude from external call tracking (e.g. internal services,
+      # localhost, known noise). Always excludes 127.0.0.1 and localhost.
+      attr_accessor :external_call_ignore_hosts
+
       # Whether to enable the instrumentation. Set to false to disable
       # without removing the gem.
       attr_accessor :enabled
@@ -36,10 +43,12 @@ module Koderift
           token secret authenticity_token
           credit_card cvv ssn
         ]
-        @max_breadcrumbs   = 20
-        @max_slow_partials = 5
-        @max_slow_queries  = 5
-        @enabled           = true
+        @max_breadcrumbs            = 20
+        @max_slow_partials          = 5
+        @max_slow_queries           = 5
+        @max_external_calls         = 10
+        @external_call_ignore_hosts = []
+        @enabled                    = true
       end
 
       def valid?

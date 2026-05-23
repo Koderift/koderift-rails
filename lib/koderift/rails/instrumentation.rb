@@ -49,26 +49,35 @@ module Koderift
           }
         end
 
+        external_calls = []
+        Thread.current[:koderift_external_calls]  = external_calls
+        Thread.current[:koderift_external_config] = config
+
         begin
           yield
         ensure
           ActiveSupport::Notifications.unsubscribe(partial_sub)
           ActiveSupport::Notifications.unsubscribe(query_sub)
+          Thread.current[:koderift_external_calls]  = nil
+          Thread.current[:koderift_external_config] = nil
         end
 
         top_partials = partials.sort_by { |p| -p[:duration_ms] }
                                .first(config.max_slow_partials)
         top_queries  = queries.sort_by { |q| -q[:duration_ms] }
                               .first(config.max_slow_queries)
+        top_external = external_calls.sort_by { |c| -c[:duration_ms] }
+                                     .first(config.max_external_calls)
 
         {
-          slow_partials: top_partials,
-          query_stats:   {
+          slow_partials:  top_partials,
+          query_stats:    {
             slow_queries:  top_queries,
             query_count:   queries.size,
             partial_count: partials.size
           },
-          breadcrumbs: breadcrumbs.last(config.max_breadcrumbs)
+          external_calls: top_external,
+          breadcrumbs:    breadcrumbs.last(config.max_breadcrumbs)
         }
       end
 
@@ -76,5 +85,43 @@ module Koderift
         defined?(::Rails) && ::Rails.respond_to?(:root) && ::Rails.root ? ::Rails.root.to_s : ''
       end
     end
+
+    # Installed once when the gem loads. Writes to the thread-local
+    # external_calls array set by Instrumentation.capture; outside of a
+    # capture block the patch is a no-op pass-through.
+    module NetHttpPatch
+      def request(req, *args, &block)
+        calls  = Thread.current[:koderift_external_calls]
+        config = Thread.current[:koderift_external_config]
+        return super unless calls && config
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        response   = super(req, *args, &block)
+        duration   = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000).round
+
+        host    = address.to_s
+        ignored = ['127.0.0.1', 'localhost', '[::1]'].include?(host) ||
+                  config.external_call_ignore_hosts.any? { |h| host.include?(h) }
+
+        unless ignored
+          raw_path = req.path.to_s.split('?').first.to_s
+          segments = raw_path.split('/').reject(&:empty?).first(2)
+          endpoint = segments.empty? ? '/' : '/' + segments.join('/')
+
+          calls << {
+            host:        host,
+            endpoint:    endpoint,
+            method:      req.method.to_s.upcase,
+            status:      response.code.to_i,
+            duration_ms: duration
+          }
+        end
+
+        response
+      end
+    end
   end
 end
+
+require 'net/http'
+Net::HTTP.prepend(Koderift::Rails::NetHttpPatch)

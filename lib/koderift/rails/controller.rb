@@ -19,9 +19,10 @@ module Koderift
           yield
         end
 
-        request.env['koderift.slow_partials'] = result[:slow_partials]
-        request.env['koderift.query_stats']   = result[:query_stats]
-        request.env['koderift.breadcrumbs']   = result[:breadcrumbs]
+        request.env['koderift.slow_partials']  = result[:slow_partials]
+        request.env['koderift.query_stats']    = result[:query_stats]
+        request.env['koderift.external_calls'] = result[:external_calls]
+        request.env['koderift.breadcrumbs']    = result[:breadcrumbs]
       end
 
       def append_info_to_payload(payload)
@@ -50,9 +51,10 @@ module Koderift
         payload[:koderift_request_id]   = request.request_id
         payload[:koderift_referer]      = request.referer
         payload[:koderift_params]       = filtered_params.to_h
-        payload[:koderift_slow_partials] = request.env['koderift.slow_partials']
-        payload[:koderift_query_stats]  = request.env['koderift.query_stats']
-        payload[:koderift_breadcrumbs]  = request.env['koderift.breadcrumbs']
+        payload[:koderift_slow_partials]  = request.env['koderift.slow_partials']
+        payload[:koderift_query_stats]    = request.env['koderift.query_stats']
+        payload[:koderift_external_calls] = request.env['koderift.external_calls']
+        payload[:koderift_breadcrumbs]    = request.env['koderift.breadcrumbs']
       end
     end
   end
