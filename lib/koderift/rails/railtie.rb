@@ -33,6 +33,22 @@ module Koderift
           include Koderift::Rails::RumHelper
         end
       end
+
+      # Register Sidekiq server middleware lazily when Sidekiq is present.
+      initializer 'koderift.sidekiq_middleware', after: :load_config_initializers do
+        next unless Koderift::Rails.configuration.enabled
+
+        ActiveSupport.on_load(:after_initialize) do
+          if defined?(Sidekiq) && Sidekiq.respond_to?(:configure_server)
+            require 'koderift/rails/sidekiq_middleware'
+            Sidekiq.configure_server do |sidekiq_config|
+              sidekiq_config.server_middleware do |chain|
+                chain.add Koderift::Rails::SidekiqMiddleware
+              end
+            end
+          end
+        end
+      end
     end
   end
 end

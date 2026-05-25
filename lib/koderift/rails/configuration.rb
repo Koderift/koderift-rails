@@ -34,6 +34,10 @@ module Koderift
       # Passed to rum.js so sampling happens client-side.
       attr_accessor :rum_sampling_rate
 
+      # Threshold in milliseconds above which a Sidekiq job is marked 'slow'
+      # in the emitted log payload. Default 30_000 (30 seconds).
+      attr_accessor :slow_job_threshold_ms
+
       def initialize
         @project_token     = nil
         @current_user      = default_current_user
@@ -47,6 +51,7 @@ module Koderift
         @enabled                    = true
         @rum_enabled                = true
         @rum_sampling_rate          = 0.1
+        @slow_job_threshold_ms      = 30_000
       end
 
       def valid?
