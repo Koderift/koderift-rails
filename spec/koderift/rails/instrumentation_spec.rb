@@ -100,7 +100,7 @@ RSpec.describe Koderift::Rails::Instrumentation do
   end
 
   describe 'search.searchkick instrumentation' do
-    it 'captures searchkick notifications during capture block' do
+    it 'captures single search notifications with correct index name' do
       result = nil
       thread = Thread.new do
         result = Koderift::Rails::Instrumentation.capture do
@@ -113,10 +113,9 @@ RSpec.describe Koderift::Rails::Instrumentation do
       thread.join
 
       expect(result[:search_stats][:query_count]).to eq(1)
-      expect(result[:search_stats][:slow_queries].size).to eq(1)
-
       q = result[:search_stats][:slow_queries].first
       expect(q[:index]).to eq('Admin10')
+      expect(q[:duration_ms]).to be_a(Integer)
     end
 
     it 'strips " Search" suffix from payload name' do
@@ -131,11 +130,10 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      q = result[:search_stats][:slow_queries].first
-      expect(q[:index]).to eq('Property')
+      expect(result[:search_stats][:slow_queries].first[:index]).to eq('Property')
     end
 
-    it 'uses "unknown" when name is blank' do
+    it 'uses "unknown" when name has no model prefix' do
       result = nil
       thread = Thread.new do
         result = Koderift::Rails::Instrumentation.capture do
@@ -147,8 +145,41 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      q = result[:search_stats][:slow_queries].first
-      expect(q[:index]).to eq('unknown')
+      expect(result[:search_stats][:slow_queries].first[:index]).to eq('unknown')
+    end
+
+    it 'captures multi_search notifications as "multi_search" index' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          ActiveSupport::Notifications.instrument(
+            'multi_search.searchkick',
+            name: 'Multi Search',
+            body: ''
+          ) {}
+        end
+      end
+      thread.join
+
+      expect(result[:search_stats][:query_count]).to eq(1)
+      expect(result[:search_stats][:slow_queries].first[:index]).to eq('multi_search')
+    end
+
+    it 'counts both single and multi search notifications together' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          ActiveSupport::Notifications.instrument('search.searchkick',
+            name: 'Admin10 Search') {}
+          ActiveSupport::Notifications.instrument('multi_search.searchkick',
+            name: 'Multi Search', body: '') {}
+          ActiveSupport::Notifications.instrument('search.searchkick',
+            name: 'Property Search') {}
+        end
+      end
+      thread.join
+
+      expect(result[:search_stats][:query_count]).to eq(3)
     end
 
     it 'returns empty search_stats when no searches occur' do
@@ -164,28 +195,11 @@ RSpec.describe Koderift::Rails::Instrumentation do
 
     it 'ignores searchkick notifications outside a capture block' do
       expect {
-        ActiveSupport::Notifications.instrument(
-          'search.searchkick',
-          name: 'Admin10 Search'
-        ) {}
+        ActiveSupport::Notifications.instrument('search.searchkick',
+          name: 'Admin10 Search') {}
+        ActiveSupport::Notifications.instrument('multi_search.searchkick',
+          name: 'Multi Search', body: '') {}
       }.not_to raise_error
-    end
-
-    it 'counts multiple searches correctly' do
-      result = nil
-      thread = Thread.new do
-        result = Koderift::Rails::Instrumentation.capture do
-          3.times do
-            ActiveSupport::Notifications.instrument(
-              'search.searchkick',
-              name: 'Admin10 Search'
-            ) {}
-          end
-        end
-      end
-      thread.join
-
-      expect(result[:search_stats][:query_count]).to eq(3)
     end
   end
 

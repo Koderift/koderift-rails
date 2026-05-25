@@ -50,19 +50,27 @@ module Koderift
           }
         end
 
+        # Single-model search: fired by Model.search(...)
+        # payload: { name: "Admin10 Search", query: {...} }
         search_sub = ActiveSupport::Notifications.subscribe('search.searchkick') do |*args|
           event    = ActiveSupport::Notifications::Event.new(*args)
           payload  = event.payload
           duration = (payload[:duration] || event.duration).round
-          # payload[:name] is "<ModelName> Search" (e.g. "Admin10 Search")
-          # or just "Search" when no model is associated.
-          index    = payload[:name].to_s.sub(/\s*Search\z/i, '').strip
-          index    = 'unknown' if index.empty?
 
-          search_queries << {
-            index:       index,
-            duration_ms: duration
-          }
+          index = payload[:name].to_s.sub(/\s*Search\z/i, '').strip
+          index = 'unknown' if index.blank?
+
+          search_queries << { index: index, duration_ms: duration }
+        end
+
+        # Multi search: fired by Searchkick.multi_search([...])
+        # payload: { name: "Multi Search", body: "..." }
+        # Duration covers the entire batch — record as a single entry.
+        multi_search_sub = ActiveSupport::Notifications.subscribe('multi_search.searchkick') do |*args|
+          event    = ActiveSupport::Notifications::Event.new(*args)
+          duration = event.duration.round
+
+          search_queries << { index: 'multi_search', duration_ms: duration }
         end
 
         external_calls = []
@@ -75,6 +83,7 @@ module Koderift
           ActiveSupport::Notifications.unsubscribe(partial_sub)
           ActiveSupport::Notifications.unsubscribe(query_sub)
           ActiveSupport::Notifications.unsubscribe(search_sub)
+          ActiveSupport::Notifications.unsubscribe(multi_search_sub)
           Thread.current[:koderift_external_calls]  = nil
           Thread.current[:koderift_external_config] = nil
         end
