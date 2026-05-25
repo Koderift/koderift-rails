@@ -26,11 +26,11 @@ module Koderift
           yield
         end
 
-        request.env['koderift.slow_partials']  = result[:slow_partials]
-        request.env['koderift.query_stats']    = result[:query_stats]
-        request.env['koderift.search_stats']   = result[:search_stats]
-        request.env['koderift.external_calls'] = result[:external_calls]
-        request.env['koderift.breadcrumbs']    = result[:breadcrumbs]
+        request.env['koderift.spans']         = result[:spans]
+        request.env['koderift.query_count']   = result[:query_count]
+        request.env['koderift.partial_count'] = result[:partial_count]
+        request.env['koderift.search_count']  = result[:search_count]
+        request.env['koderift.breadcrumbs']   = result[:breadcrumbs]
       ensure
         Thread.current[:koderift_trace_id] = nil
       end
@@ -62,11 +62,11 @@ module Koderift
         payload[:koderift_trace_id]     = request.env['koderift.trace_id']
         payload[:koderift_referer]      = request.referer
         payload[:koderift_params]       = filtered_params.to_h
-        payload[:koderift_slow_partials]  = request.env['koderift.slow_partials']
-        payload[:koderift_query_stats]    = request.env['koderift.query_stats']
-        payload[:koderift_search_stats]   = request.env['koderift.search_stats']
-        payload[:koderift_external_calls] = request.env['koderift.external_calls']
-        payload[:koderift_breadcrumbs]    = request.env['koderift.breadcrumbs']
+        payload[:koderift_spans]         = request.env['koderift.spans']
+        payload[:koderift_query_count]   = request.env['koderift.query_count']
+        payload[:koderift_partial_count] = request.env['koderift.partial_count']
+        payload[:koderift_search_count]  = request.env['koderift.search_count']
+        payload[:koderift_breadcrumbs]   = request.env['koderift.breadcrumbs']
       end
     end
   end

@@ -31,10 +31,10 @@ module Koderift
             referer:       event.payload[:koderift_referer],
             breadcrumbs:   event.payload[:koderift_breadcrumbs],
             params:        event.payload[:koderift_params],
-            slow_partials:  event.payload[:koderift_slow_partials],
-            query_stats:    event.payload[:koderift_query_stats],
-            search_stats:   event.payload[:koderift_search_stats],
-            external_calls: event.payload[:koderift_external_calls]
+            spans:         event.payload[:koderift_spans],
+            query_count:   event.payload[:koderift_query_count],
+            partial_count: event.payload[:koderift_partial_count],
+            search_count:  event.payload[:koderift_search_count]
           }.compact
         end
       end

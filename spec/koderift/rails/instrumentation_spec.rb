@@ -56,21 +56,51 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
     end
 
-    it 'returns top N slow partials sorted by duration' do
-      Koderift::Rails.configure { |c| c.max_slow_partials = 2 }
-
-      result = described_class.capture do
-        [10, 50, 30].each do |ms|
-          ActiveSupport::Notifications.instrument(
-            'render_partial.action_view',
-            identifier: "/app/views/pages/_partial_#{ms}.html.erb",
-            duration:   ms.to_f
-          )
+    it 'captures every partial as a span without truncation' do
+      result = nil
+      thread = Thread.new do
+        result = described_class.capture do
+          [10, 50, 30].each do |ms|
+            ActiveSupport::Notifications.instrument(
+              'render_partial.action_view',
+              identifier: "/app/views/pages/_partial_#{ms}.html.erb",
+              duration:   ms.to_f
+            )
+          end
         end
       end
+      thread.join
 
-      expect(result[:slow_partials].first[:duration_ms]).to eq(50)
-      expect(result[:slow_partials].size).to eq(2)
+      partial_spans = result[:spans].select { |s| s[:type] == 'partial' }
+      expect(partial_spans.size).to eq(3)
+      partial_spans.each do |s|
+        expect(s).to include(:type, :name, :duration_ms, :sequence)
+      end
+      expect(partial_spans.map { |s| s[:sequence] }).to eq([0, 1, 2])
+      expect(result[:partial_count]).to eq(3)
+    end
+
+    it 'does not return the legacy blob keys' do
+      result = nil
+      thread = Thread.new do
+        result = described_class.capture { nil }
+      end
+      thread.join
+
+      expect(result).not_to have_key(:slow_partials)
+      expect(result).not_to have_key(:query_stats)
+      expect(result).not_to have_key(:search_stats)
+      expect(result).not_to have_key(:external_calls)
+    end
+
+    it 'returns scalar counts for queries, partials, and searches' do
+      result = nil
+      thread = Thread.new do
+        result = described_class.capture { nil }
+      end
+      thread.join
+
+      expect(result).to include(query_count: 0, partial_count: 0, search_count: 0)
     end
 
     it 'unsubscribes from notifications after capture' do
@@ -112,10 +142,11 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      expect(result[:search_stats][:query_count]).to eq(1)
-      q = result[:search_stats][:slow_queries].first
-      expect(q[:index]).to eq('Admin10')
+      expect(result[:search_count]).to eq(1)
+      q = result[:spans].find { |s| s[:type] == 'search' }
+      expect(q[:name]).to eq('Admin10')
       expect(q[:duration_ms]).to be_a(Integer)
+      expect(q[:sequence]).to eq(0)
     end
 
     it 'strips " Search" suffix from payload name' do
@@ -130,7 +161,7 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      expect(result[:search_stats][:slow_queries].first[:index]).to eq('Property')
+      expect(result[:spans].find { |s| s[:type] == 'search' }[:name]).to eq('Property')
     end
 
     it 'uses "unknown" when name has no model prefix' do
@@ -145,7 +176,7 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      expect(result[:search_stats][:slow_queries].first[:index]).to eq('unknown')
+      expect(result[:spans].find { |s| s[:type] == 'search' }[:name]).to eq('unknown')
     end
 
     it 'captures multi_search notifications as "multi_search" index' do
@@ -161,8 +192,8 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      expect(result[:search_stats][:query_count]).to eq(1)
-      expect(result[:search_stats][:slow_queries].first[:index]).to eq('multi_search')
+      expect(result[:search_count]).to eq(1)
+      expect(result[:spans].find { |s| s[:type] == 'search' }[:name]).to eq('multi_search')
     end
 
     it 'counts both single and multi search notifications together' do
@@ -179,18 +210,19 @@ RSpec.describe Koderift::Rails::Instrumentation do
       end
       thread.join
 
-      expect(result[:search_stats][:query_count]).to eq(3)
+      expect(result[:search_count]).to eq(3)
+      expect(result[:spans].count { |s| s[:type] == 'search' }).to eq(3)
     end
 
-    it 'returns empty search_stats when no searches occur' do
+    it 'returns zero search_count and no search spans when no searches occur' do
       result = nil
       thread = Thread.new do
         result = Koderift::Rails::Instrumentation.capture { nil }
       end
       thread.join
 
-      expect(result[:search_stats][:query_count]).to eq(0)
-      expect(result[:search_stats][:slow_queries]).to be_empty
+      expect(result[:search_count]).to eq(0)
+      expect(result[:spans].select { |s| s[:type] == 'search' }).to be_empty
     end
 
     it 'ignores searchkick notifications outside a capture block' do
@@ -261,7 +293,7 @@ RSpec.describe Koderift::Rails::Instrumentation do
       expect(req['X-Koderift-Trace-ID']).to be_nil
     end
 
-    it 'includes trace_id in captured external call hash' do
+    it 'includes trace_id inside the http span detail JSON' do
       trace_id = 'abc-123'
 
       result = Koderift::Rails::Instrumentation.capture do
@@ -276,8 +308,12 @@ RSpec.describe Koderift::Rails::Instrumentation do
         }
       end
 
-      call = result[:external_calls].first
-      expect(call[:trace_id]).to eq(trace_id)
+      span = result[:spans].find { |s| s[:type] == 'http' }
+      expect(span[:name]).to eq('api.stripe.com/v1/charges')
+      expect(span[:duration_ms]).to eq(145)
+      expect(span[:sequence]).to eq(0)
+      detail = JSON.parse(span[:detail])
+      expect(detail).to include('method' => 'POST', 'status' => 200, 'trace_id' => trace_id)
     ensure
       Thread.current[:koderift_trace_id] = nil
     end

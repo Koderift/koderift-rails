@@ -54,26 +54,31 @@ RSpec.describe Koderift::Rails::LogrageConfig do
   end
 
   describe '.apply' do
-    it 'includes trace_id in custom_options output' do
-      event = double('event', payload: {
-        koderift_user_id:     nil,
-        koderift_host:        'example.com',
-        db_runtime:           10.5,
-        exception:            nil,
-        exception_object:     nil,
-        koderift_request_id:  'req-123',
-        koderift_trace_id:    'trace-abc-456',
-        koderift_ip:          '1.2.3.4',
-        koderift_user_agent:  'Mozilla/5.0',
-        allocations:          1000,
-        koderift_referer:     nil,
-        koderift_breadcrumbs: nil,
-        koderift_params:      {},
-        koderift_slow_partials:  nil,
-        koderift_query_stats:    nil,
-        koderift_external_calls: nil
-      })
+    let(:spans) { [{ type: 'sql', name: 'SELECT 1', duration_ms: 5, sequence: 0 }] }
 
+    let(:event) do
+      double('event', payload: {
+        koderift_user_id:      nil,
+        koderift_host:         'example.com',
+        db_runtime:            10.5,
+        exception:             nil,
+        exception_object:      nil,
+        koderift_request_id:   'req-123',
+        koderift_trace_id:     'trace-abc-456',
+        koderift_ip:           '1.2.3.4',
+        koderift_user_agent:   'Mozilla/5.0',
+        allocations:           1000,
+        koderift_referer:      nil,
+        koderift_breadcrumbs:  nil,
+        koderift_params:       {},
+        koderift_spans:        spans,
+        koderift_query_count:  1,
+        koderift_partial_count: 0,
+        koderift_search_count: 0
+      })
+    end
+
+    def apply_and_call(event)
       app = double('app', config: double(lograge: double(
         enabled: nil, keep_original_rails_log: nil,
         formatter: nil, custom_options: nil
@@ -90,10 +95,29 @@ RSpec.describe Koderift::Rails::LogrageConfig do
       stub_const('Lograge::Formatters::Json', Class.new { def initialize; end })
 
       Koderift::Rails::LogrageConfig.apply(app)
+      captured_options.call(event)
+    end
 
-      result = captured_options.call(event)
+    it 'includes trace_id and request_id in custom_options output' do
+      result = apply_and_call(event)
       expect(result[:trace_id]).to eq('trace-abc-456')
       expect(result[:request_id]).to eq('req-123')
+    end
+
+    it 'emits spans and scalar counts' do
+      result = apply_and_call(event)
+      expect(result[:spans]).to eq(spans)
+      expect(result[:query_count]).to eq(1)
+      expect(result[:partial_count]).to eq(0)
+      expect(result[:search_count]).to eq(0)
+    end
+
+    it 'does not emit the legacy blob keys' do
+      result = apply_and_call(event)
+      expect(result).not_to have_key(:slow_partials)
+      expect(result).not_to have_key(:query_stats)
+      expect(result).not_to have_key(:search_stats)
+      expect(result).not_to have_key(:external_calls)
     end
   end
 end

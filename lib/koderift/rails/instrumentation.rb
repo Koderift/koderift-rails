@@ -88,28 +88,36 @@ module Koderift
           Thread.current[:koderift_external_config] = nil
         end
 
-        top_partials = partials.sort_by { |p| -p[:duration_ms] }
-                               .first(config.max_slow_partials)
-        top_queries  = queries.sort_by { |q| -q[:duration_ms] }
-                              .first(config.max_slow_queries)
-        top_search   = search_queries.sort_by { |q| -q[:duration_ms] }
-                                     .first(config.max_slow_queries)
-        top_external = external_calls.sort_by { |c| -c[:duration_ms] }
-                                     .first(config.max_external_calls)
+        spans = []
+
+        partials.each_with_index do |p, i|
+          spans << { type: 'partial', name: p[:partial], duration_ms: p[:duration_ms], sequence: i }
+        end
+
+        queries.each_with_index do |q, i|
+          spans << { type: 'sql', name: q[:sql], duration_ms: q[:duration_ms], sequence: i }
+        end
+
+        search_queries.each_with_index do |s, i|
+          spans << { type: 'search', name: s[:index], duration_ms: s[:duration_ms], sequence: i }
+        end
+
+        external_calls.each_with_index do |c, i|
+          spans << {
+            type:        'http',
+            name:        "#{c[:host]}#{c[:endpoint]}",
+            duration_ms: c[:duration_ms],
+            detail:      { method: c[:method], status: c[:status], trace_id: c[:trace_id] }.compact.to_json,
+            sequence:    i
+          }
+        end
 
         {
-          slow_partials:  top_partials,
-          query_stats:    {
-            slow_queries:  top_queries,
-            query_count:   queries.size,
-            partial_count: partials.size
-          },
-          search_stats:   {
-            slow_queries: top_search,
-            query_count:  search_queries.size
-          },
-          external_calls: top_external,
-          breadcrumbs:    breadcrumbs.last(config.max_breadcrumbs)
+          spans:         spans,
+          query_count:   queries.size,
+          partial_count: partials.size,
+          search_count:  search_queries.size,
+          breadcrumbs:   breadcrumbs.last(config.max_breadcrumbs)
         }
       end
 
