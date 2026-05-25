@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'active_support/concern'
+require 'securerandom'
 require 'koderift/rails/instrumentation'
 
 module Koderift
@@ -15,6 +16,12 @@ module Koderift
       private
 
       def koderift_instrument_request
+        trace_id = request.headers['X-Koderift-Trace-ID'].presence ||
+                   SecureRandom.uuid
+
+        Thread.current[:koderift_trace_id] = trace_id
+        request.env['koderift.trace_id']   = trace_id
+
         result = Koderift::Rails::Instrumentation.capture do
           yield
         end
@@ -23,6 +30,8 @@ module Koderift
         request.env['koderift.query_stats']    = result[:query_stats]
         request.env['koderift.external_calls'] = result[:external_calls]
         request.env['koderift.breadcrumbs']    = result[:breadcrumbs]
+      ensure
+        Thread.current[:koderift_trace_id] = nil
       end
 
       def append_info_to_payload(payload)
@@ -49,6 +58,7 @@ module Koderift
         payload[:koderift_ip]           = request.remote_ip
         payload[:koderift_user_agent]   = request.user_agent
         payload[:koderift_request_id]   = request.request_id
+        payload[:koderift_trace_id]     = request.env['koderift.trace_id']
         payload[:koderift_referer]      = request.referer
         payload[:koderift_params]       = filtered_params.to_h
         payload[:koderift_slow_partials]  = request.env['koderift.slow_partials']

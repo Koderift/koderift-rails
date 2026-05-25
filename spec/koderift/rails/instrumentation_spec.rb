@@ -124,4 +124,72 @@ RSpec.describe Koderift::Rails::Instrumentation do
       expect(ignored).to be true
     end
   end
+
+  describe 'trace ID propagation' do
+    # Stand-in for Net::HTTP — `request` returns the req so we can inspect
+    # what the prepended patch did to it before calling super.
+    def fake_http_class
+      Class.new do
+        def request(req, *_args, &_block)
+          req
+        end
+      end.tap { |c| c.prepend(Koderift::Rails::NetHttpPatch) }
+    end
+
+    it 'injects X-Koderift-Trace-ID header into outbound Net::HTTP requests' do
+      trace_id = 'test-trace-id-1234'
+      Thread.current[:koderift_trace_id] = trace_id
+
+      req = Net::HTTP::Get.new('/')
+      fake_http_class.new.request(req)
+
+      expect(req['X-Koderift-Trace-ID']).to eq(trace_id)
+    ensure
+      Thread.current[:koderift_trace_id] = nil
+    end
+
+    it 'does not inject header when no trace_id is set' do
+      Thread.current[:koderift_trace_id] = nil
+
+      req = Net::HTTP::Get.new('/')
+      fake_http_class.new.request(req)
+
+      expect(req['X-Koderift-Trace-ID']).to be_nil
+    end
+
+    it 'includes trace_id in captured external call hash' do
+      trace_id = 'abc-123'
+
+      result = Koderift::Rails::Instrumentation.capture do
+        Thread.current[:koderift_trace_id] = trace_id
+        Thread.current[:koderift_external_calls] << {
+          host:        'api.stripe.com',
+          endpoint:    '/v1/charges',
+          method:      'POST',
+          status:      200,
+          duration_ms: 145,
+          trace_id:    trace_id
+        }
+      end
+
+      call = result[:external_calls].first
+      expect(call[:trace_id]).to eq(trace_id)
+    ensure
+      Thread.current[:koderift_trace_id] = nil
+    end
+
+    it 'propagates incoming trace ID rather than generating a new one' do
+      upstream_trace = 'upstream-trace-xyz'
+      headers        = { 'X-Koderift-Trace-ID' => upstream_trace }
+
+      trace_id = headers['X-Koderift-Trace-ID'].presence || SecureRandom.uuid
+      expect(trace_id).to eq(upstream_trace)
+    end
+
+    it 'generates a new trace ID when no upstream header present' do
+      headers  = {}
+      trace_id = headers['X-Koderift-Trace-ID'].presence || SecureRandom.uuid
+      expect(trace_id).to match(/\A[0-9a-f\-]{36}\z/)
+    end
+  end
 end

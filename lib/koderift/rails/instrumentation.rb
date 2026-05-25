@@ -91,9 +91,13 @@ module Koderift
     # capture block the patch is a no-op pass-through.
     module NetHttpPatch
       def request(req, *args, &block)
-        calls  = Thread.current[:koderift_external_calls]
-        config = Thread.current[:koderift_external_config]
-        return super unless calls && config
+        calls    = Thread.current[:koderift_external_calls]
+        config   = Thread.current[:koderift_external_config]
+        trace_id = Thread.current[:koderift_trace_id]
+
+        req['X-Koderift-Trace-ID'] = trace_id if trace_id
+
+        return super(req, *args, &block) unless calls && config
 
         start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         response   = super(req, *args, &block)
@@ -113,7 +117,8 @@ module Koderift
             endpoint:    endpoint,
             method:      req.method.to_s.upcase,
             status:      response.code.to_i,
-            duration_ms: duration
+            duration_ms: duration,
+            trace_id:    trace_id
           }
         end
 

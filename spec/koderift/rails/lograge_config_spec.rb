@@ -52,4 +52,48 @@ RSpec.describe Koderift::Rails::LogrageConfig do
       expect(app_indices).not_to be_empty
     end
   end
+
+  describe '.apply' do
+    it 'includes trace_id in custom_options output' do
+      event = double('event', payload: {
+        koderift_user_id:     nil,
+        koderift_host:        'example.com',
+        db_runtime:           10.5,
+        exception:            nil,
+        exception_object:     nil,
+        koderift_request_id:  'req-123',
+        koderift_trace_id:    'trace-abc-456',
+        koderift_ip:          '1.2.3.4',
+        koderift_user_agent:  'Mozilla/5.0',
+        allocations:          1000,
+        koderift_referer:     nil,
+        koderift_breadcrumbs: nil,
+        koderift_params:      {},
+        koderift_slow_partials:  nil,
+        koderift_query_stats:    nil,
+        koderift_external_calls: nil
+      })
+
+      app = double('app', config: double(lograge: double(
+        enabled: nil, keep_original_rails_log: nil,
+        formatter: nil, custom_options: nil
+      )))
+
+      captured_options = nil
+      allow(app.config.lograge).to receive(:custom_options=) { |v| captured_options = v }
+      allow(app.config.lograge).to receive(:enabled=)
+      allow(app.config.lograge).to receive(:keep_original_rails_log=)
+      allow(app.config.lograge).to receive(:formatter=)
+
+      stub_const('Lograge', Module.new)
+      stub_const('Lograge::Formatters', Module.new)
+      stub_const('Lograge::Formatters::Json', Class.new { def initialize; end })
+
+      Koderift::Rails::LogrageConfig.apply(app)
+
+      result = captured_options.call(event)
+      expect(result[:trace_id]).to eq('trace-abc-456')
+      expect(result[:request_id]).to eq('req-123')
+    end
+  end
 end

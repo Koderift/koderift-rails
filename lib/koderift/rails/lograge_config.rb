@@ -22,6 +22,7 @@ module Koderift
             db:            event.payload[:db_runtime]&.round(2),
             exception:     event.payload[:exception]&.join(': '),
             request_id:    event.payload[:koderift_request_id],
+            trace_id:      event.payload[:koderift_trace_id],
             ip:            event.payload[:koderift_ip],
             user_agent:    event.payload[:koderift_user_agent],
             allocations:   event.payload[:allocations],
