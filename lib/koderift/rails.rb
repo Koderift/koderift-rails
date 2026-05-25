@@ -5,6 +5,7 @@ require 'koderift/rails/configuration'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/lograge_config'
 require 'koderift/rails/controller'
+require 'koderift/rails/rum_helper'
 require 'koderift/rails/railtie' if defined?(::Rails::Railtie)
 
 module Koderift

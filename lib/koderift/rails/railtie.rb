@@ -23,6 +23,16 @@ module Koderift
           include Koderift::Rails::Controller
         end
       end
+
+      # Make koderift_rum_meta_tag available in all views
+      initializer 'koderift.helpers', after: :load_config_initializers do
+        next unless Koderift::Rails.configuration.enabled
+
+        ActiveSupport.on_load(:action_view) do
+          require 'koderift/rails/rum_helper'
+          include Koderift::Rails::RumHelper
+        end
+      end
     end
   end
 end

@@ -27,4 +27,22 @@ RSpec.describe Koderift::Rails::Configuration do
     config.project_token = 'abc123'
     expect(config.valid?).to be true
   end
+
+  it 'defaults rum_enabled to true' do
+    expect(config.rum_enabled).to be true
+  end
+
+  it 'defaults rum_sampling_rate to 0.1' do
+    expect(config.rum_sampling_rate).to eq(0.1)
+  end
+
+  it 'allows rum_enabled to be set to false' do
+    config.rum_enabled = false
+    expect(config.rum_enabled).to be false
+  end
+
+  it 'allows rum_sampling_rate to be configured' do
+    config.rum_sampling_rate = 0.5
+    expect(config.rum_sampling_rate).to eq(0.5)
+  end
 end

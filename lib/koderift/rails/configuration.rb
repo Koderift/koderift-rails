@@ -35,6 +35,14 @@ module Koderift
       # without removing the gem.
       attr_accessor :enabled
 
+      # Whether to enable Browser RUM. Set to false for API-only apps.
+      # Defaults to true — the meta tag is harmless if rum.js is not loaded.
+      attr_accessor :rum_enabled
+
+      # Fraction of sessions to capture (0.0–1.0). Default 0.1 (10%).
+      # Passed to rum.js so sampling happens client-side.
+      attr_accessor :rum_sampling_rate
+
       def initialize
         @project_token     = nil
         @current_user      = default_current_user
@@ -49,6 +57,8 @@ module Koderift
         @max_external_calls         = 10
         @external_call_ignore_hosts = []
         @enabled                    = true
+        @rum_enabled                = true
+        @rum_sampling_rate          = 0.1
       end
 
       def valid?
