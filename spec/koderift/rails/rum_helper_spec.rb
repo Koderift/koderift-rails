@@ -24,7 +24,7 @@ RSpec.describe Koderift::Rails::RumHelper do
   describe '#koderift_rum_meta_tag' do
     it 'renders a meta tag with the project token' do
       result = koderift_rum_meta_tag
-      expect(result).to include('name="koderift-token"')
+      expect(result).to include('name="koderift-rum-token"')
       expect(result).to include('content="test-token-abc"')
     end
 

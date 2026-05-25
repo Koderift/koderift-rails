@@ -10,7 +10,7 @@ module Koderift
       #   <%= koderift_rum_meta_tag %>
       #
       # Renders:
-      #   <meta name="koderift-token"
+      #   <meta name="koderift-rum-token"
       #         content="abc123"
       #         data-rum-sampling-rate="0.1">
       #
@@ -20,7 +20,7 @@ module Koderift
         return ''.html_safe unless config.rum_enabled && config.project_token.present?
 
         tag.meta(
-          name:    'koderift-token',
+          name:    'koderift-rum-token',
           content: config.project_token,
           data: {
             rum_sampling_rate: config.rum_sampling_rate.to_f
