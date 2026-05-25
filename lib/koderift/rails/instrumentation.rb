@@ -10,10 +10,11 @@ module Koderift
       # partial render times, SQL query times, and breadcrumbs.
       # Returns a hash of captured data to be merged into the log payload.
       def self.capture
-        partials    = []
-        queries     = []
-        breadcrumbs = []
-        config      = Koderift::Rails.configuration
+        partials       = []
+        queries        = []
+        search_queries = []
+        breadcrumbs    = []
+        config         = Koderift::Rails.configuration
 
         partial_sub = ActiveSupport::Notifications.subscribe('render_partial.action_view') do |*args|
           event      = ActiveSupport::Notifications::Event.new(*args)
@@ -49,6 +50,19 @@ module Koderift
           }
         end
 
+        search_sub = ActiveSupport::Notifications.subscribe('search.searchkick') do |*args|
+          event    = ActiveSupport::Notifications::Event.new(*args)
+          payload  = event.payload
+          duration = (payload[:duration] || event.duration).round
+          index    = payload[:index].to_s.sub(/_[a-z]+\z/, '')
+
+          search_queries << {
+            index:       index,
+            duration_ms: duration,
+            klass:       payload[:klass].to_s
+          }
+        end
+
         external_calls = []
         Thread.current[:koderift_external_calls]  = external_calls
         Thread.current[:koderift_external_config] = config
@@ -58,6 +72,7 @@ module Koderift
         ensure
           ActiveSupport::Notifications.unsubscribe(partial_sub)
           ActiveSupport::Notifications.unsubscribe(query_sub)
+          ActiveSupport::Notifications.unsubscribe(search_sub)
           Thread.current[:koderift_external_calls]  = nil
           Thread.current[:koderift_external_config] = nil
         end
@@ -66,6 +81,8 @@ module Koderift
                                .first(config.max_slow_partials)
         top_queries  = queries.sort_by { |q| -q[:duration_ms] }
                               .first(config.max_slow_queries)
+        top_search   = search_queries.sort_by { |q| -q[:duration_ms] }
+                                     .first(config.max_slow_queries)
         top_external = external_calls.sort_by { |c| -c[:duration_ms] }
                                      .first(config.max_external_calls)
 
@@ -75,6 +92,10 @@ module Koderift
             slow_queries:  top_queries,
             query_count:   queries.size,
             partial_count: partials.size
+          },
+          search_stats:   {
+            slow_queries: top_search,
+            query_count:  search_queries.size
           },
           external_calls: top_external,
           breadcrumbs:    breadcrumbs.last(config.max_breadcrumbs)

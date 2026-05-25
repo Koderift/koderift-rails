@@ -2,6 +2,6 @@
 
 module Koderift
   module Rails
-    VERSION = '1.0.6'
+    VERSION = '1.2.0'
   end
 end

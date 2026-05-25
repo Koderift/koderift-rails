@@ -33,6 +33,7 @@ module Koderift
             params:        event.payload[:koderift_params],
             slow_partials:  event.payload[:koderift_slow_partials],
             query_stats:    event.payload[:koderift_query_stats],
+            search_stats:   event.payload[:koderift_search_stats],
             external_calls: event.payload[:koderift_external_calls]
           }.compact
         end

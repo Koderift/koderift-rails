@@ -99,6 +99,91 @@ RSpec.describe Koderift::Rails::Instrumentation do
     end
   end
 
+  describe 'search.searchkick instrumentation' do
+    it 'captures searchkick notifications during capture block' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          ActiveSupport::Notifications.instrument(
+            'search.searchkick',
+            index: 'admin10s_production',
+            klass: 'Admin10',
+            duration: 42.5
+          ) {}
+        end
+      end
+      thread.join
+
+      expect(result[:search_stats][:query_count]).to eq(1)
+      expect(result[:search_stats][:slow_queries].size).to eq(1)
+
+      q = result[:search_stats][:slow_queries].first
+      expect(q[:index]).to eq('admin10s')
+      expect(q[:duration_ms]).to eq(43)
+      expect(q[:klass]).to eq('Admin10')
+    end
+
+    it 'strips environment suffix from index name' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          ActiveSupport::Notifications.instrument(
+            'search.searchkick',
+            index: 'properties_staging',
+            klass: 'Property',
+            duration: 10.0
+          ) {}
+        end
+      end
+      thread.join
+
+      q = result[:search_stats][:slow_queries].first
+      expect(q[:index]).to eq('properties')
+    end
+
+    it 'returns empty search_stats when no searches occur' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture { nil }
+      end
+      thread.join
+
+      expect(result[:search_stats][:query_count]).to eq(0)
+      expect(result[:search_stats][:slow_queries]).to be_empty
+    end
+
+    it 'ignores searchkick notifications outside a capture block' do
+      expect {
+        ActiveSupport::Notifications.instrument(
+          'search.searchkick',
+          index: 'admin10s_production',
+          klass: 'Admin10',
+          duration: 5.0
+        ) {}
+      }.not_to raise_error
+    end
+
+    it 'counts multiple searches correctly' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          3.times do |i|
+            ActiveSupport::Notifications.instrument(
+              'search.searchkick',
+              index: 'admin10s_production',
+              klass: 'Admin10',
+              duration: (i + 1) * 10.0
+            ) {}
+          end
+        end
+      end
+      thread.join
+
+      expect(result[:search_stats][:query_count]).to eq(3)
+      expect(result[:search_stats][:slow_queries].first[:duration_ms]).to eq(30)
+    end
+  end
+
   describe 'external call capture' do
     it 'captures Net::HTTP calls made during a request' do
       result = nil
