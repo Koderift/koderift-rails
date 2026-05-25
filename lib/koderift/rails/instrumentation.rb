@@ -54,12 +54,14 @@ module Koderift
           event    = ActiveSupport::Notifications::Event.new(*args)
           payload  = event.payload
           duration = (payload[:duration] || event.duration).round
-          index    = payload[:index].to_s.sub(/_[a-z]+\z/, '')
+          # payload[:name] is "<ModelName> Search" (e.g. "Admin10 Search")
+          # or just "Search" when no model is associated.
+          index    = payload[:name].to_s.sub(/\s*Search\z/i, '').strip
+          index    = 'unknown' if index.empty?
 
           search_queries << {
             index:       index,
-            duration_ms: duration,
-            klass:       payload[:klass].to_s
+            duration_ms: duration
           }
         end
 

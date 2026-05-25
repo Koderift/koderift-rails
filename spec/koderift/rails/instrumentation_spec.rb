@@ -106,9 +106,7 @@ RSpec.describe Koderift::Rails::Instrumentation do
         result = Koderift::Rails::Instrumentation.capture do
           ActiveSupport::Notifications.instrument(
             'search.searchkick',
-            index: 'admin10s_production',
-            klass: 'Admin10',
-            duration: 42.5
+            name: 'Admin10 Search'
           ) {}
         end
       end
@@ -118,27 +116,39 @@ RSpec.describe Koderift::Rails::Instrumentation do
       expect(result[:search_stats][:slow_queries].size).to eq(1)
 
       q = result[:search_stats][:slow_queries].first
-      expect(q[:index]).to eq('admin10s')
-      expect(q[:duration_ms]).to eq(43)
-      expect(q[:klass]).to eq('Admin10')
+      expect(q[:index]).to eq('Admin10')
     end
 
-    it 'strips environment suffix from index name' do
+    it 'strips " Search" suffix from payload name' do
       result = nil
       thread = Thread.new do
         result = Koderift::Rails::Instrumentation.capture do
           ActiveSupport::Notifications.instrument(
             'search.searchkick',
-            index: 'properties_staging',
-            klass: 'Property',
-            duration: 10.0
+            name: 'Property Search'
           ) {}
         end
       end
       thread.join
 
       q = result[:search_stats][:slow_queries].first
-      expect(q[:index]).to eq('properties')
+      expect(q[:index]).to eq('Property')
+    end
+
+    it 'uses "unknown" when name is blank' do
+      result = nil
+      thread = Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          ActiveSupport::Notifications.instrument(
+            'search.searchkick',
+            name: 'Search'
+          ) {}
+        end
+      end
+      thread.join
+
+      q = result[:search_stats][:slow_queries].first
+      expect(q[:index]).to eq('unknown')
     end
 
     it 'returns empty search_stats when no searches occur' do
@@ -156,9 +166,7 @@ RSpec.describe Koderift::Rails::Instrumentation do
       expect {
         ActiveSupport::Notifications.instrument(
           'search.searchkick',
-          index: 'admin10s_production',
-          klass: 'Admin10',
-          duration: 5.0
+          name: 'Admin10 Search'
         ) {}
       }.not_to raise_error
     end
@@ -167,12 +175,10 @@ RSpec.describe Koderift::Rails::Instrumentation do
       result = nil
       thread = Thread.new do
         result = Koderift::Rails::Instrumentation.capture do
-          3.times do |i|
+          3.times do
             ActiveSupport::Notifications.instrument(
               'search.searchkick',
-              index: 'admin10s_production',
-              klass: 'Admin10',
-              duration: (i + 1) * 10.0
+              name: 'Admin10 Search'
             ) {}
           end
         end
@@ -180,7 +186,6 @@ RSpec.describe Koderift::Rails::Instrumentation do
       thread.join
 
       expect(result[:search_stats][:query_count]).to eq(3)
-      expect(result[:search_stats][:slow_queries].first[:duration_ms]).to eq(30)
     end
   end
 
