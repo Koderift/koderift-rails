@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+begin
+  require 'lograge'
+rescue LoadError
+  # lograge not available — instrumentation will be skipped
+end
+
 module Koderift
   module Rails
     module LogrageConfig
