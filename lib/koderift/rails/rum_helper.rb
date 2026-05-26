@@ -12,7 +12,8 @@ module Koderift
       # Renders:
       #   <meta name="koderift-rum-token"
       #         content="abc123"
-      #         data-rum-sampling-rate="0.1">
+      #         data-rum-sampling-rate="0.1"
+      #         data-environment="production">
       #
       # Returns an empty string when RUM is disabled or no token is configured.
       def koderift_rum_meta_tag
@@ -23,7 +24,8 @@ module Koderift
           name:    'koderift-rum-token',
           content: config.project_token,
           data: {
-            rum_sampling_rate: config.rum_sampling_rate.to_f
+            rum_sampling_rate: config.rum_sampling_rate.to_f,
+            environment:       (defined?(::Rails) && ::Rails.respond_to?(:env) ? ::Rails.env.to_s : 'production')
           }
         )
       end

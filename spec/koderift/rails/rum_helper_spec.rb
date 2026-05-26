@@ -52,5 +52,26 @@ RSpec.describe Koderift::Rails::RumHelper do
       result = koderift_rum_meta_tag
       expect(result).to include('0.5')
     end
+
+    it 'includes data-environment attribute with current Rails env' do
+      result = koderift_rum_meta_tag
+      expect(result).to include('data-environment')
+    end
+
+    it 'uses Rails.env for the environment attribute' do
+      without_partial_double_verification do
+        allow(::Rails).to receive(:env).and_return(
+          ActiveSupport::StringInquirer.new('staging')
+        )
+        result = koderift_rum_meta_tag
+        expect(result).to include('staging')
+      end
+    end
+
+    it 'falls back to production when Rails is not defined' do
+      hide_const('::Rails')
+      result = koderift_rum_meta_tag
+      expect(result).to include('production')
+    end
   end
 end
