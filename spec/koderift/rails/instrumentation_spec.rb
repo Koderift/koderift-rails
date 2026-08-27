@@ -235,29 +235,281 @@ RSpec.describe Koderift::Rails::Instrumentation do
     end
   end
 
-  describe 'external call capture' do
-    it 'captures Net::HTTP calls made during a request' do
+  # Reproduces the stdlib re-entry shape line for line, including the non-local
+  # `return` out of the `start` block (which is what makes the guard's ensure
+  # load-bearing) and start closing the socket on the way out.
+  describe 'Net::HTTP re-entrancy' do
+    def reentrant_http_class
+      Class.new do
+        attr_reader :address, :invocations, :transports
+
+        def initialize(address: 'sender.thelinkcm.com', started: false,
+                       connect_ms: 60, transport_ms: 2,
+                       status: '201', raise_with: nil)
+          @address      = address
+          @started      = started
+          @connect_ms   = connect_ms
+          @transport_ms = transport_ms
+          @raise_with   = raise_with
+          @response     = Net::HTTPResponse.new('1.1', status, 'Created')
+          @invocations  = 0 # entries into the UNPATCHED body (2 == it re-entered)
+          @transports   = 0 # requests that actually went on the wire
+        end
+
+        def started?
+          @started
+        end
+
+        def start
+          sleep(@connect_ms / 1000.0) # DNS + TCP + TLS
+          @started = true
+          yield
+        ensure
+          @started = false            # socket closed -> next call reconnects
+        end
+
+        def request(req, body = nil, &block)
+          @invocations += 1
+
+          unless started?
+            start {
+              req['connection'] ||= 'close'
+              return request(req, body, &block)
+            }
+          end
+
+          @transports += 1
+          sleep(@transport_ms / 1000.0)
+          raise @raise_with if @raise_with
+
+          block&.call(@response)
+          @response
+        end
+      end.tap { |c| c.prepend(Koderift::Rails::NetHttpPatch) }
+    end
+
+    # Own thread per example so the guard's thread-local cannot leak.
+    def with_capture
+      calls = nil
       result = nil
-      Koderift::Rails::Instrumentation.capture do
-        Thread.current[:koderift_external_calls] << {
-          host: 'api.stripe.com', endpoint: '/v1/charges',
-          method: 'POST', status: 200, duration_ms: 145
-        }
-        result = :ok
+      Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          calls = Thread.current[:koderift_external_calls]
+          yield
+        end
+      end.join
+      [calls, result]
+    end
+
+    it 'records exactly one entry for one logical call on a cold connection' do
+      http = reentrant_http_class.new
+      req  = Net::HTTP::Post.new('/api/messages')
+
+      calls, _result = with_capture { http.request(req) }
+
+      # Anti-vacuity: if the stand-in stopped re-entering, or only ever made
+      # one call, the assertion below would prove nothing.
+      expect(http.invocations).to eq(2)
+      expect(http.transports).to eq(1)
+
+      expect(calls.size).to eq(1)
+    end
+
+    it 'emits one http span, not two, for one logical call' do
+      http = reentrant_http_class.new
+      req  = Net::HTTP::Post.new('/api/messages')
+
+      _calls, result = with_capture { http.request(req) }
+
+      http_spans = result[:spans].select { |s| s[:type] == 'http' }
+      expect(http_spans.size).to eq(1)
+      expect(http_spans.first[:name]).to eq('sender.thelinkcm.com/api/messages')
+      expect(http_spans.first[:sequence]).to eq(0)
+    end
+
+    it 'keeps the outer timing, which includes connection setup' do
+      http = reentrant_http_class.new(connect_ms: 60, transport_ms: 2)
+      req  = Net::HTTP::Post.new('/api/messages')
+
+      calls, _result = with_capture { http.request(req) }
+
+      expect(calls.size).to eq(1)
+      # The inner frame is timed from after the connection is open, so it can
+      # only ever be a couple of ms. >= 50 against a 60ms sleep proves the
+      # surviving entry is the outer one.
+      expect(calls.first[:duration_ms]).to be >= 50
+    end
+
+    it 'records a second entry for a genuine second call on a started connection' do
+      http = reentrant_http_class.new(started: true)
+
+      calls, _result = with_capture do
+        http.request(Net::HTTP::Get.new('/api/messages/1'))
+        http.request(Net::HTTP::Get.new('/api/messages/2'))
       end
-      expect(result).to eq(:ok)
+
+      expect(http.invocations).to eq(2) # warm: no recursion
+      expect(calls.size).to eq(2)
     end
 
-    it 'truncates path to two segments' do
-      raw_path = '/v1/charges/ch_abc123xyz?expand[]=customer'
-      segments = raw_path.split('?').first.split('/').reject(&:empty?).first(2)
-      endpoint = '/' + segments.join('/')
-      expect(endpoint).to eq('/v1/charges')
+    it 'records once per logical call when every call reconnects' do
+      http = reentrant_http_class.new(connect_ms: 1)
+
+      calls, _result = with_capture do
+        http.request(Net::HTTP::Post.new('/api/messages'))
+        http.request(Net::HTTP::Post.new('/api/messages'))
+      end
+
+      expect(http.invocations).to eq(4) # two logical calls, each re-entering
+      expect(calls.size).to eq(2)
     end
 
-    it 'excludes localhost calls' do
-      ignored = ['127.0.0.1', 'localhost', '[::1]'].include?('localhost')
-      expect(ignored).to be true
+    # Hypothetical, not witnessed: an exhaustive grep of every repo and gem on
+    # this machine found five real `#request { |res| ... }` call sites and none
+    # of them nests an HTTP call. Kept because the identity guard handles it for
+    # free; see the ordering caveat in the plan before trusting the output.
+    it 'still records a nested call to another host made from the response block' do
+      outer = reentrant_http_class.new(address: 'sender.thelinkcm.com', connect_ms: 1)
+      inner = reentrant_http_class.new(address: 'uploads.example.com', started: true)
+
+      calls, _result = with_capture do
+        outer.request(Net::HTTP::Post.new('/api/messages')) do |_res|
+          inner.request(Net::HTTP::Put.new('/v1/objects/abc'))
+        end
+      end
+
+      # Completion order: the nested call finishes first.
+      expect(calls.map { |c| c[:host] })
+        .to eq(['uploads.example.com', 'sender.thelinkcm.com'])
+    end
+
+    it 'leaves the guard clean when the request raises, so the next call records' do
+      broken  = reentrant_http_class.new(connect_ms: 1, raise_with: Errno::ECONNRESET)
+      healthy = reentrant_http_class.new(connect_ms: 1)
+      req     = Net::HTTP::Post.new('/api/messages') # SAME object both times
+
+      calls, _result = with_capture do
+        expect { broken.request(req) }.to raise_error(Errno::ECONNRESET)
+        healthy.request(req)
+      end
+
+      expect(calls.size).to eq(1)
+      expect(calls.first[:host]).to eq('sender.thelinkcm.com')
+    end
+
+    it 'injects the trace ID header exactly once on a re-entrant call' do
+      trace_id = 'test-trace-id-1234'
+      http     = reentrant_http_class.new(connect_ms: 1)
+      req      = Net::HTTP::Post.new('/api/messages')
+
+      calls, _result = with_capture do
+        Thread.current[:koderift_trace_id] = trace_id
+        http.request(req)
+      end
+
+      expect(req['X-Koderift-Trace-ID']).to eq(trace_id)
+      expect(req.get_fields('X-Koderift-Trace-ID')).to eq([trace_id])
+      expect(calls.size).to eq(1)
+      expect(calls.first[:trace_id]).to eq(trace_id)
+    end
+  end
+
+  # Replaces the deleted `describe 'external call capture'`. Warm connection, so
+  # re-entrancy is out of the picture and only the recording rules are tested --
+  # and unlike the deleted block, these drive NetHttpPatch for real.
+  describe 'external call recording' do
+    def warm_http_class
+      Class.new do
+        attr_reader :address, :transports
+
+        def initialize(address: 'api.stripe.com', status: '201')
+          @address    = address
+          @transports = 0
+          @response   = Net::HTTPResponse.new('1.1', status, 'Created')
+        end
+
+        def started?
+          true
+        end
+
+        def request(_req, _body = nil, &_block)
+          @transports += 1
+          @response
+        end
+      end.tap { |c| c.prepend(Koderift::Rails::NetHttpPatch) }
+    end
+
+    def with_capture
+      calls = nil
+      result = nil
+      Thread.new do
+        result = Koderift::Rails::Instrumentation.capture do
+          calls = Thread.current[:koderift_external_calls]
+          yield
+        end
+      end.join
+      [calls, result]
+    end
+
+    it 'records host, endpoint, method and status for a captured call' do
+      http = warm_http_class.new
+
+      calls, _result = with_capture { http.request(Net::HTTP::Post.new('/v1/charges')) }
+
+      expect(calls.size).to eq(1)
+      expect(calls.first).to include(
+        host: 'api.stripe.com', endpoint: '/v1/charges',
+        method: 'POST', status: 201
+      )
+      expect(calls.first[:duration_ms]).to be_a(Integer)
+    end
+
+    it 'truncates the recorded endpoint to two path segments and drops the query' do
+      http = warm_http_class.new
+
+      calls, _result = with_capture do
+        http.request(Net::HTTP::Get.new('/v1/charges/ch_abc123xyz?expand[]=customer'))
+      end
+
+      expect(calls.first[:endpoint]).to eq('/v1/charges')
+    end
+
+    it 'records the root path as "/"' do
+      http = warm_http_class.new
+
+      calls, _result = with_capture { http.request(Net::HTTP::Get.new('/')) }
+
+      expect(calls.first[:endpoint]).to eq('/')
+    end
+
+    it 'does not record loopback hosts' do
+      %w[127.0.0.1 localhost [::1]].each do |host|
+        http = warm_http_class.new(address: host)
+
+        calls, _result = with_capture { http.request(Net::HTTP::Get.new('/health')) }
+
+        expect(calls).to be_empty
+      end
+    end
+
+    it 'does not record a host matched by external_call_ignore_hosts' do
+      Koderift::Rails.configure { |c| c.external_call_ignore_hosts = ['internal.example'] }
+      http = warm_http_class.new(address: 'svc.internal.example.com')
+
+      calls, result = with_capture { http.request(Net::HTTP::Get.new('/health')) }
+
+      expect(calls).to be_empty
+      expect(result[:spans].select { |s| s[:type] == 'http' }).to be_empty
+    end
+
+    it 'is a pass-through when no capture block is active' do
+      http = warm_http_class.new
+      response = nil
+
+      Thread.new { response = http.request(Net::HTTP::Get.new('/v1/charges')) }.join
+
+      expect(response).to be_a(Net::HTTPResponse)
+      expect(http.transports).to eq(1)
     end
   end
 
