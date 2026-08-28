@@ -7,14 +7,16 @@ information — no manual `ApplicationController` changes needed.
 
 ## Installation
 
+Requires Ruby >= 2.7 and Rails 7.1-8.x.
+
 Add to your `Gemfile`:
 
 ```ruby
-gem 'koderift-rails'
-gem 'lograge'
+gem 'koderift-rails', '~> 1.3'
 ```
 
-Run `bundle install`.
+Run `bundle install`. Lograge is a dependency of this gem and is installed
+with it - you do not need to add it yourself.
 
 ## Configuration
 
