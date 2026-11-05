@@ -12,7 +12,7 @@ Requires Ruby >= 2.7 and Rails 7.1-8.x.
 Add to your `Gemfile`:
 
 ```ruby
-gem 'koderift-rails', '~> 1.3'
+gem 'koderift-rails', '~> 2.0'
 ```
 
 Run `bundle install`. Lograge is a dependency of this gem and is installed
@@ -198,7 +198,7 @@ find out at migration time rather than from a silent no-op.
 ## Requirements
 
 * Ruby >= 2.7
-* Rails >= 6.1
+* Rails 7.1-8.x
 * lograge >= 0.11
 * koderift-agent >= 1.4.0 for manual captures to reach the Log Explorer
   (older agents ship them as raw log lines only)

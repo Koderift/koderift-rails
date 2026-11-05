@@ -6,7 +6,7 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
-## [2.0.0] - 2026-09-03
+## [2.0.0] - 2026-11-04
 
 Manual error reporting, with a Sentry-compatible API.
 
