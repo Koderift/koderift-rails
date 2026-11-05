@@ -45,6 +45,17 @@ RSpec.describe Koderift::Rails::SidekiqMiddleware do
       expect(parsed['trace_id']).to  be_a(String)
     end
 
+    it 'names an ActiveJob by the job it wraps, as Sidekiq does' do
+      job['class']   = 'Sidekiq::ActiveJob::Wrapper'
+      job['wrapped'] = 'SendInvoiceJob'
+      component = nil
+
+      middleware.call(worker, job, queue) { component = Thread.current[:koderift_context][:component] }
+
+      expect(JSON.parse(log_lines.last)['job_class']).to eq 'SendInvoiceJob'
+      expect(component).to eq 'SendInvoiceJob'
+    end
+
     it 'includes spans array in the payload' do
       middleware.call(worker, job, queue) { nil }
       parsed = JSON.parse(log_lines.last)

@@ -3,6 +3,7 @@
 require 'active_support/concern'
 require 'securerandom'
 require 'koderift/rails/instrumentation'
+require 'koderift/rails/scope'
 
 module Koderift
   module Rails
@@ -22,6 +23,21 @@ module Koderift
         Thread.current[:koderift_trace_id] = trace_id
         request.env['koderift.trace_id']   = trace_id
 
+        # Ambient context for manual captures. Koderift.capture_exception can be
+        # called from anywhere below this frame -- a model, a service object, a
+        # rescue three layers down -- and has no other way to learn which
+        # request it happened inside. The controller instance is kept so
+        # config.current_user can be resolved at capture time rather than eagerly
+        # on every request that never captures anything.
+        Thread.current[:koderift_context] = {
+          component:           self.class.name,
+          action:              action_name,
+          request_id:          request.request_id,
+          path:                request.path,
+          http_method:         request.request_method,
+          controller_instance: self
+        }
+
         result = Koderift::Rails::Instrumentation.capture do
           yield
         end
@@ -33,6 +49,11 @@ module Koderift
         request.env['koderift.breadcrumbs']   = result[:breadcrumbs]
       ensure
         Thread.current[:koderift_trace_id] = nil
+        Thread.current[:koderift_context]  = nil
+        # Puma reuses threads across requests. Without this reset a tag set for
+        # one user's request would silently attach to the next request served
+        # by the same thread.
+        Koderift::Rails::Scope.reset!
       end
 
       def append_info_to_payload(payload)

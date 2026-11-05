@@ -6,6 +6,41 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.0.0] - 2026-09-03
+
+Manual error reporting, with a Sentry-compatible API.
+
+Requires koderift-agent >= 1.4.0. Against an older agent, captures still reach
+Raw Logs but not the Log Explorer or the Errors page.
+
+### Added
+- `Koderift.capture_exception` and `Koderift.capture_message` for reporting
+  errors your code already handles. `capture_exception` returns an event with an
+  `event_id`, or nil when nothing was emitted.
+- Scope (`configure_scope`, `with_scope`, `set_user`, `set_tags`, `set_tag`,
+  `set_extras`, `set_extra`, `set_context`), breadcrumbs
+  (`add_breadcrumb`, `Koderift::Breadcrumb`), and `exception_captured?`.
+- Custom instrumentation: `with_child_span` records a span that renders in the
+  APM trace beside the SQL and HTTP spans, and `start_transaction` traces work
+  that is neither a request nor a Sidekiq job — a rake task or cron script.
+- Uncaught rake task failures are now captured automatically. Previously a task
+  that raised wrote only to STDERR, which under cron is never in the Rails log,
+  so those failures were invisible.
+- Configuration: `max_captures_per_minute` (default 100), `sample_rate`,
+  `before_send` and `excluded_exceptions`.
+
+### Fixed
+- Sidekiq jobs enqueued through ActiveJob are reported under their own class
+  (`job["wrapped"]`, as Sidekiq logs them) instead of the adapter's wrapper,
+  which filed every ActiveJob under one `Sidekiq::ActiveJob::Wrapper` row.
+
+### Notes
+- Captures appear under a new `manual` log source, and are excluded from the
+  APM request aggregates by it, so they cannot skew throughput, p95 or Apdex.
+- The gem does not define `Sentry`. Migration is a namespace find-and-replace;
+  see the README for the full mapping and the short list of Sentry APIs with no
+  Koderift equivalent.
+
 ## [1.3.4] - 2026-08-27
 
 First release published to RubyGems.

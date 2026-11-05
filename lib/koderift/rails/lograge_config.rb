@@ -46,9 +46,14 @@ module Koderift
       end
 
       def self.format_backtrace(exception)
-        return nil unless exception&.backtrace&.any?
+        format_frames(exception&.backtrace)
+      end
 
-        backtrace = exception.backtrace
+      # Split out from format_backtrace so a caller holding a raw backtrace
+      # array -- Capture, when given an explicit `backtrace:` -- gets the same
+      # frame selection instead of a second, subtly different implementation.
+      def self.format_frames(backtrace)
+        return nil unless backtrace.is_a?(Array) && backtrace.any?
 
         leading = backtrace.first(LEADING_FRAMES)
 

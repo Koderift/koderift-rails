@@ -10,11 +10,28 @@ module Koderift
       # partial render times, SQL query times, and breadcrumbs.
       # Returns a hash of captured data to be merged into the log payload.
       def self.capture
+        state = start_capture
+        begin
+          yield
+        ensure
+          stop_capture(state)
+        end
+        build_result(state)
+      end
+
+      # capture's three phases, exposed separately so a unit of work that is
+      # NOT a block runs through the same subscriptions rather than a parallel
+      # implementation. Tracing::Transaction is that caller: it has to be
+      # started and finished by two separate calls to mirror Sentry's
+      # start_transaction / finish, which a block-shaped API cannot express.
+      def self.start_capture
+        config         = Koderift::Rails.configuration
         partials       = []
         queries        = []
         search_queries = []
         breadcrumbs    = []
-        config         = Koderift::Rails.configuration
+        custom_spans   = []
+        external_calls = []
 
         partial_sub = ActiveSupport::Notifications.subscribe('render_partial.action_view') do |*args|
           event      = ActiveSupport::Notifications::Event.new(*args)
@@ -73,36 +90,54 @@ module Koderift
           search_queries << { index: 'multi_search', duration_ms: duration }
         end
 
-        external_calls = []
+        # Published for the same reason external_calls is: code that runs
+        # somewhere else entirely — the Net::HTTP patch, Koderift.add_breadcrumb,
+        # Koderift.with_child_span — has no other way to find the collection
+        # belonging to the unit of work currently in flight on this thread.
+        Thread.current[:koderift_breadcrumbs]     = breadcrumbs
+        Thread.current[:koderift_custom_spans]    = custom_spans
         Thread.current[:koderift_external_calls]  = external_calls
         Thread.current[:koderift_external_config] = config
 
-        begin
-          yield
-        ensure
-          ActiveSupport::Notifications.unsubscribe(partial_sub)
-          ActiveSupport::Notifications.unsubscribe(query_sub)
-          ActiveSupport::Notifications.unsubscribe(search_sub)
-          ActiveSupport::Notifications.unsubscribe(multi_search_sub)
-          Thread.current[:koderift_external_calls]  = nil
-          Thread.current[:koderift_external_config] = nil
-        end
+        {
+          config:         config,
+          partials:       partials,
+          queries:        queries,
+          search_queries: search_queries,
+          breadcrumbs:    breadcrumbs,
+          custom_spans:   custom_spans,
+          external_calls: external_calls,
+          subscriptions:  [partial_sub, query_sub, search_sub, multi_search_sub]
+        }
+      end
 
+      def self.stop_capture(state)
+        state[:subscriptions].each do |sub|
+          ActiveSupport::Notifications.unsubscribe(sub)
+        end
+        Thread.current[:koderift_breadcrumbs]     = nil
+        Thread.current[:koderift_custom_spans]    = nil
+        Thread.current[:koderift_external_calls]  = nil
+        Thread.current[:koderift_external_config] = nil
+        state
+      end
+
+      def self.build_result(state)
         spans = []
 
-        partials.each_with_index do |p, i|
+        state[:partials].each_with_index do |p, i|
           spans << { type: 'partial', name: p[:partial], duration_ms: p[:duration_ms], sequence: i }
         end
 
-        queries.each_with_index do |q, i|
+        state[:queries].each_with_index do |q, i|
           spans << { type: 'sql', name: q[:sql], duration_ms: q[:duration_ms], sequence: i }
         end
 
-        search_queries.each_with_index do |s, i|
+        state[:search_queries].each_with_index do |s, i|
           spans << { type: 'search', name: s[:index], duration_ms: s[:duration_ms], sequence: i }
         end
 
-        external_calls.each_with_index do |c, i|
+        state[:external_calls].each_with_index do |c, i|
           spans << {
             type:        'http',
             name:        "#{c[:host]}#{c[:endpoint]}",
@@ -112,12 +147,22 @@ module Koderift
           }
         end
 
+        state[:custom_spans].each_with_index do |c, i|
+          spans << {
+            type:        'custom',
+            name:        c[:name],
+            duration_ms: c[:duration_ms],
+            detail:      c[:detail],
+            sequence:    i
+          }.compact
+        end
+
         {
           spans:         spans,
-          query_count:   queries.size,
-          partial_count: partials.size,
-          search_count:  search_queries.size,
-          breadcrumbs:   breadcrumbs.last(config.max_breadcrumbs)
+          query_count:   state[:queries].size,
+          partial_count: state[:partials].size,
+          search_count:  state[:search_queries].size,
+          breadcrumbs:   state[:breadcrumbs].last(state[:config].max_breadcrumbs)
         }
       end
 

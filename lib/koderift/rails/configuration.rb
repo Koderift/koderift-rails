@@ -38,6 +38,31 @@ module Koderift
       # in the emitted log payload. Default 30_000 (30 seconds).
       attr_accessor :slow_job_threshold_ms
 
+      # Ceiling on manual captures (Koderift.capture_exception and friends) per
+      # minute, per process. A capture in a hot loop or a retrying job can emit
+      # thousands of lines, and raw log lines are the billing source of truth
+      # for log storage quota. Set to nil to disable the cap. Drops are always
+      # announced on the log -- never silent.
+      attr_accessor :max_captures_per_minute
+
+      # Fraction of manual captures to emit (0.0-1.0). Sentry's `sample_rate`.
+      # Applies to captures only, never to transactions: silently dropping
+      # units of work would make the APM view understate throughput.
+      attr_accessor :sample_rate
+
+      # Called with (payload_hash, hint) before a capture is emitted. Return the
+      # hash (optionally modified) to emit it, or nil to drop it. Sentry's
+      # `before_send`. If this callback itself raises, the ORIGINAL payload is
+      # emitted and a warning logged -- a bug in the callback must not silently
+      # blind error reporting.
+      attr_accessor :before_send
+
+      # Exception class names (as strings) that manual captures ignore, matched
+      # against the full ancestor chain. Sentry's `excluded_exceptions`.
+      # Defaults to empty: unlike Sentry we never capture automatically, so
+      # every call is something the application asked for explicitly.
+      attr_accessor :excluded_exceptions
+
       def initialize
         @project_token     = nil
         @current_user      = default_current_user
@@ -52,6 +77,10 @@ module Koderift
         @rum_enabled                = true
         @rum_sampling_rate          = 0.1
         @slow_job_threshold_ms      = 30_000
+        @max_captures_per_minute    = 100
+        @sample_rate                = 1.0
+        @before_send                = nil
+        @excluded_exceptions        = []
       end
 
       def valid?
