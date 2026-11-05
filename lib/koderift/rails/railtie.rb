@@ -34,6 +34,20 @@ module Koderift
         end
       end
 
+      # Capture uncaught rake task failures. Rake is loaded before the Rails
+      # environment under `bundle exec rake` / `bin/rails <task>`, so the
+      # constant is present by the time initializers run; under a web server it
+      # is not, and the guard makes this a no-cost skip.
+      initializer 'koderift.rake_integration', after: :load_config_initializers do
+        next unless Koderift::Rails.configuration.enabled
+        next unless defined?(::Rake::Application)
+
+        require 'koderift/rails/rake_integration'
+        unless ::Rake::Application.include?(Koderift::Rails::RakeIntegration)
+          ::Rake::Application.prepend(Koderift::Rails::RakeIntegration)
+        end
+      end
+
       # Register Sidekiq server middleware lazily when Sidekiq is present.
       initializer 'koderift.sidekiq_middleware', after: :load_config_initializers do
         next unless Koderift::Rails.configuration.enabled

@@ -3,6 +3,7 @@
 require 'json'
 require 'securerandom'
 require 'koderift/rails/instrumentation'
+require 'koderift/rails/scope'
 
 module Koderift
   module Rails
@@ -19,6 +20,16 @@ module Koderift
         trace_id = SecureRandom.uuid if trace_id.empty?
         Thread.current[:koderift_trace_id] = trace_id
 
+        # Ambient context for manual captures made anywhere inside the job.
+        # The jid stands in for a request id: it is what correlates a capture
+        # with the job's own log line, and what carries this job's spans into
+        # log_spans (IngestLogBatchJob drops spans on a row with no request id).
+        Thread.current[:koderift_context] = {
+          component:  job_name(job),
+          action:     'perform',
+          request_id: job['jid'].to_s
+        }
+
         start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
         begin
@@ -34,10 +45,22 @@ module Koderift
           raise
         ensure
           Thread.current[:koderift_trace_id] = nil
+          Thread.current[:koderift_context]  = nil
+          # Sidekiq reuses threads across jobs; see the same reset in Controller.
+          Koderift::Rails::Scope.reset!
         end
       end
 
       private
+
+      # The name Sidekiq's own JobLogger logs the job under. For ActiveJob,
+      # job['class'] is the adapter's wrapper (Sidekiq::ActiveJob::Wrapper,
+      # ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper) for every job, and
+      # job['wrapped'] is the job itself. Matching Sidekiq also lets the agent
+      # pair this line with Sidekiq's "done" line for the same attempt.
+      def job_name(job)
+        (job['wrapped'] || job['class']).to_s
+      end
 
       def emit_job_log(_worker, job, queue, result, duration_ms, trace_id, error:)
         config = Koderift::Rails.configuration
@@ -51,7 +74,7 @@ module Koderift
         end
 
         payload = {
-          job_class:    job['class'].to_s,
+          job_class:    job_name(job),
           jid:          job['jid'].to_s,
           queue:        queue.to_s,
           status:       error ? 500 : 200,
