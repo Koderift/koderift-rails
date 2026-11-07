@@ -6,6 +6,38 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.1.0] - 2026-11-06
+
+Security fix: the Browser RUM meta tag no longer publishes your project token.
+
+### Security
+- `koderift_rum_meta_tag` used to render `config.project_token` into page HTML.
+  That token is the log agent's ingest secret, so anyone reading your page
+  source could use it to send log lines to your Koderift project, including
+  lines that count against its log quota. The tag now renders only the new
+  `config.rum_token`, a public token that can only send browser RUM data.
+- If you rendered the RUM tag on 2.0 or older, treat your project token as
+  public. Once this version is deployed with `rum_token` set, rotate the ingest
+  token in Koderift (Log Analytics settings, "Rotate ingest token"), then update
+  `webhook_url` in the agent's `agent.yml` and `KODERIFT_PROJECT_TOKEN` in your
+  app, and restart the agent.
+
+### Added
+- `config.rum_token`: your project's public RUM token, from the Log Analytics
+  setup page in Koderift. It starts with `rum_`.
+
+### Changed
+- **Action needed if you use Browser RUM:** set `config.rum_token`. Without it
+  the meta tag renders nothing, and the gem logs one warning per process the
+  first time a page renders it. There is deliberately no fallback to
+  `project_token`. The tag also refuses a `rum_token` equal to `project_token`.
+
+### Notes
+- Koderift keeps accepting RUM data sent with the old token until
+  1 February 2027, so pages not yet upgraded keep reporting until then.
+- `project_token` is still required to turn the gem on. The gem never sends it
+  anywhere; the log agent uses its own copy in `agent.yml`.
+
 ## [2.0.0] - 2026-11-04
 
 Manual error reporting, with a Sentry-compatible API.

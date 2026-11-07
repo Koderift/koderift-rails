@@ -29,6 +29,7 @@ module Koderift
         Capture.reset_rate_limiter!
         Scope.reset!
         Breadcrumbs.clear
+        RumHelper.reset_warnings!
       end
 
       # ---------------------------------------------------------------- capture

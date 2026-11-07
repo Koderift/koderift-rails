@@ -12,7 +12,7 @@ Requires Ruby >= 2.7 and Rails 7.1-8.x.
 Add to your `Gemfile`:
 
 ```ruby
-gem 'koderift-rails', '~> 2.0'
+gem 'koderift-rails', '~> 2.1'
 ```
 
 Run `bundle install`. Lograge is a dependency of this gem and is installed
@@ -32,7 +32,37 @@ end
 ```
 
 Set `KODERIFT_PROJECT_TOKEN` in your environment to the token from your
-project's Log Analytics settings page in Koderift.
+project's Log Analytics settings page in Koderift. It is the log agent's
+ingest secret: keep it out of your repository and your page HTML.
+
+## Browser RUM
+
+To collect Core Web Vitals and JS error counts from real browsers, set your
+project's public RUM token (from the Log Analytics setup page; it starts with
+`rum_`) and add the meta tag and snippet inside your layout's `<head>`:
+
+```ruby
+Koderift::Rails.configure do |config|
+  config.project_token = ENV['KODERIFT_PROJECT_TOKEN']
+  config.rum_token     = 'rum_...'
+end
+```
+
+```erb
+<%= koderift_rum_meta_tag %>
+<script src="https://<your Koderift host>/ingest/rum.js" async defer></script>
+```
+
+The meta tag publishes `rum_token` only. It can only send browser RUM data, so
+it is safe in page HTML and safe to commit. The gem never renders
+`project_token`, and it refuses a `rum_token` equal to it. Without a
+`rum_token` the tag renders nothing and the gem logs one warning per process.
+Set `config.rum_enabled = false` for API-only apps.
+
+Upgrading from 2.0 or older with RUM in use? Those versions published
+`project_token` in the meta tag. Set `rum_token`, deploy, then rotate the
+ingest token in Koderift (Log Analytics settings) and update `webhook_url` in
+the agent's `agent.yml`. See the [changelog](CHANGELOG.md).
 
 ## What it captures
 

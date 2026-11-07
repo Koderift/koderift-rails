@@ -7,6 +7,14 @@ module Koderift
       # Set from an environment variable in the initializer.
       attr_accessor :project_token
 
+      # Public token for Browser RUM, rendered into page HTML by
+      # koderift_rum_meta_tag. It can only send browser RUM data, so it is safe
+      # to publish (and to commit). Copy it from your project's Log Analytics
+      # setup page in Koderift; it starts with "rum_". Never set it to
+      # project_token: that is the log agent's ingest secret, and anyone who
+      # reads it from your page source can send log lines to your project.
+      attr_accessor :rum_token
+
       # Lambda called with the controller instance to get the current user.
       # Default tries common patterns. Override if your app is different.
       # Example: ->(controller) { controller.current_user }
@@ -65,6 +73,7 @@ module Koderift
 
       def initialize
         @project_token     = nil
+        @rum_token         = nil
         @current_user      = default_current_user
         @filter_params     = %w[
           password password_confirmation

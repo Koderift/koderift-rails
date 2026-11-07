@@ -45,4 +45,13 @@ RSpec.describe Koderift::Rails::Configuration do
     config.rum_sampling_rate = 0.5
     expect(config.rum_sampling_rate).to eq(0.5)
   end
+
+  it 'has nil rum_token by default' do
+    expect(config.rum_token).to be_nil
+  end
+
+  it 'allows rum_token to be configured' do
+    config.rum_token = 'rum_abc'
+    expect(config.rum_token).to eq('rum_abc')
+  end
 end
