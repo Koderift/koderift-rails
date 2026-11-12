@@ -6,6 +6,29 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.1.1] - 2026-11-12
+
+Fixes missing request data in apps where another gem defines `Object#logger`.
+
+### Fixed
+- Request data no longer goes missing when another gem defines a public
+  `logger` method on every object. data-anonymization does this when it
+  is loaded at boot. That method shadowed `config.lograge.logger`, so lograge
+  took the other gem's logger. The Koderift JSON request line went to STDOUT
+  instead of the log the agent tails, and nothing warned. At boot the gem now
+  points lograge back at what your app configured (`Rails.logger`, unless you
+  set `config.lograge.logger`), and logs one warning naming the module and file
+  that define the method.
+
+### Notes
+- The same method usually redirects `ActionController::Base.logger`,
+  `ActiveRecord::Base.logger` and Rails' own "Processing by", "Completed" and
+  SQL lines too. Koderift does not change those. Fix them by not loading that
+  gem at boot, for example `gem 'data-anonymization', require: false`.
+- If that gem also defines `logger=` (data-anonymization does), a
+  `config.lograge.logger` you set was handed to the gem and never reached
+  lograge, so lograge now uses `Rails.logger`.
+
 ## [2.1.0] - 2026-11-06
 
 Security fix: the Browser RUM meta tag no longer publishes your project token.

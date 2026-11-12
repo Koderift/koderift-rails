@@ -12,6 +12,14 @@ module Koderift
 
         require 'koderift/rails/lograge_config'
         Koderift::Rails::LogrageConfig.apply(app)
+
+        # Lograge.setup runs in lograge's own after_initialize hook, which is
+        # registered when lograge is first required. That has happened by now,
+        # because lograge_config requires it. Hooks run in registration order,
+        # so registering this one here makes it run after Lograge.setup.
+        app.config.after_initialize do |application|
+          Koderift::Rails::LogrageConfig.release_hijacked_logger(application)
+        end
       end
 
       # Include the controller concern into ActionController::Base

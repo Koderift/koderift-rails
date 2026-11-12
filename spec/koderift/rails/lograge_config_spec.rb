@@ -120,4 +120,140 @@ RSpec.describe Koderift::Rails::LogrageConfig do
       expect(result).not_to have_key(:external_calls)
     end
   end
+
+  describe '.release_hijacked_logger' do
+    include_context 'a captured log'
+
+    let(:options)    { Lograge::OrderedOptions.new }
+    let(:app)        { double('app', config: double('config', lograge: options)) }
+    let(:gem_logger) { ::Logger.new(StringIO.new) }
+    let(:app_logger) { ::Logger.new(StringIO.new) }
+
+    # Saves the module state Lograge.set_lograge_log_options writes, and the
+    # fallback logger lograge's subscribers use when Lograge.logger is nil.
+    around do |example|
+      lograge_state    = %i[@@logger @@application @@custom_options @@before_format @@log_level]
+      saved_lograge    = lograge_state.to_h { |name| [name, Lograge.class_variable_get(name)] }
+      saved_subscriber = ActiveSupport::LogSubscriber.instance_variable_get(:@logger)
+      ActiveSupport::LogSubscriber.logger = nil
+      begin
+        example.run
+      ensure
+        saved_lograge.each { |name, value| Lograge.class_variable_set(name, value) }
+        ActiveSupport::LogSubscriber.logger = saved_subscriber
+      end
+    end
+
+    # The step in Lograge.setup that copies config.lograge.logger into
+    # Lograge.logger. The rest of setup attaches subscribers process-wide, so
+    # only this step runs here.
+    def run_lograge_copy_step
+      Lograge.application = app
+      Lograge.set_lograge_log_options
+    end
+
+    # Where lograge will write the JSON request line.
+    def lograge_destination
+      Lograge::LogSubscribers::ActionController.new.logger
+    end
+
+    context 'when a gem has given every object a public logger' do
+      # Stands in for data-anonymization 0.9.1, whose top-level
+      # `include DataAnon::Core::DSL` puts a STDOUT logger on every object.
+      let(:hijacker) do
+        hijacked = gem_logger
+        Module.new { define_method(:logger) { hijacked } }
+      end
+
+      before do
+        stub_const('HijackingLoggerGem', hijacker)
+        Object.include(hijacker)
+      end
+
+      # A module cannot be un-included, but once its method is gone it is inert,
+      # so no other example sees Object#logger.
+      after { hijacker.send(:remove_method, :logger) }
+
+      it 'reproduces the hijack: lograge copies the gem logger although the app set none' do
+        expect(options.key?(:logger)).to be(false)
+        expect(options.logger).to be(gem_logger)
+
+        run_lograge_copy_step
+
+        expect(Lograge.logger).to be(gem_logger)
+        expect(lograge_destination).to be(gem_logger)
+      end
+
+      it 'points lograge back at Rails.logger' do
+        run_lograge_copy_step
+        described_class.release_hijacked_logger(app)
+
+        expect(Lograge.logger).to be_nil
+        expect(lograge_destination).to be(logger)
+      end
+
+      it 'warns once, naming the method owner and the loggers it probably redirected too' do
+        run_lograge_copy_step
+        2.times { described_class.release_hijacked_logger(app) }
+
+        expect(warnings.size).to eq(1)
+        expect(warnings.first).to include(
+          'HijackingLoggerGem (',
+          File.basename(__FILE__),
+          'pointed lograge back at Rails.logger',
+          'ActionController::Base.logger',
+          'ActiveRecord::Base.logger',
+          "Rails' own request lines"
+        )
+      end
+
+      context 'and the app set config.lograge.logger itself' do
+        before { options.logger = app_logger }
+
+        it 'restores the configured logger, which the gem method had shadowed' do
+          expect(options.key?(:logger)).to be(true)
+          run_lograge_copy_step
+          expect(Lograge.logger).to be(gem_logger)
+
+          described_class.release_hijacked_logger(app)
+
+          expect(Lograge.logger).to be(app_logger)
+          expect(lograge_destination).to be(app_logger)
+          expect(warnings.first).to include('pointed lograge back at the logger set in config.lograge.logger')
+        end
+      end
+    end
+
+    context 'when no gem shadows logger' do
+      it 'leaves a configured config.lograge.logger alone' do
+        options.logger = app_logger
+        run_lograge_copy_step
+
+        described_class.release_hijacked_logger(app)
+
+        expect(Lograge.logger).to be(app_logger)
+        expect(warnings).to be_empty
+      end
+
+      it 'leaves an unset logger nil and stays quiet' do
+        run_lograge_copy_step
+
+        described_class.release_hijacked_logger(app)
+
+        expect(Lograge.logger).to be_nil
+        expect(lograge_destination).to be(logger)
+        expect(warnings).to be_empty
+      end
+
+      it 'leaves a Lograge.logger the app assigned directly alone' do
+        run_lograge_copy_step
+        Lograge.logger = app_logger
+
+        described_class.release_hijacked_logger(app)
+
+        expect(Lograge.logger).to be(app_logger)
+        expect(warnings).to be_empty
+      end
+    end
+  end
 end
