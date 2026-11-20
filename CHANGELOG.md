@@ -6,6 +6,32 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.1.2] - 2026-11-19
+
+Fixes missing request detail for controllers that inherit from
+`ActionController::API`.
+
+### Fixed
+- Controllers that inherit from `ActionController::API` are now instrumented,
+  not just those that inherit from `ActionController::Base`. That covers every
+  controller in an API-only app, and API namespaces in a normal app.
+  `ActionController::API` is a separate base class, not a subclass of
+  `ActionController::Base`, so before this fix their requests were never
+  instrumented. Lograge still logged each request with its duration, DB and
+  view time and status. But the line had no SQL, partial, search or HTTP
+  spans, no breadcrumbs, params, user, IP, user agent or trace ID. In Koderift
+  their traces showed the whole request as Ruby time with nothing to explain
+  it.
+
+### Notes
+- Requests logged before you upgrade keep the missing detail. It was never
+  collected.
+- If your API base controller fills Koderift's fields itself, through
+  `append_info_to_payload` or by including `Koderift::Rails::Controller`, you
+  can remove that after upgrading. Leaving it in does no harm. The concern runs
+  once per request, and an override that calls `super` gets the gem's fields
+  first.
+
 ## [2.1.1] - 2026-11-12
 
 Fixes missing request data in apps where another gem defines `Object#logger`.

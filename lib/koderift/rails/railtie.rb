@@ -22,14 +22,27 @@ module Koderift
         end
       end
 
-      # Include the controller concern into ActionController::Base
+      # ActionController::API is a second base class, not a subclass of
+      # ActionController::Base. Hooking only Base left every API controller --
+      # all of an API-only app, or an app's JSON API namespace -- without the
+      # around_action: lograge still wrote the request line, but with no spans,
+      # breadcrumbs, params, trace ID or user, so its trace showed the whole
+      # request as unexplained Ruby time.
+      CONTROLLER_LOAD_HOOKS = %i[action_controller_base action_controller_api].freeze
+
+      def self.include_controller_concern
+        CONTROLLER_LOAD_HOOKS.each do |hook|
+          ActiveSupport.on_load(hook) do
+            require 'koderift/rails/controller'
+            include Koderift::Rails::Controller
+          end
+        end
+      end
+
       initializer 'koderift.include_controller', after: :load_config_initializers do
         next unless Koderift::Rails.configuration.enabled
 
-        ActiveSupport.on_load(:action_controller_base) do
-          require 'koderift/rails/controller'
-          include Koderift::Rails::Controller
-        end
+        Koderift::Rails::Railtie.include_controller_concern
       end
 
       # Make koderift_rum_meta_tag available in all views

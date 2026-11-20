@@ -3,7 +3,9 @@
 Rails instrumentation gem for [Koderift](https://koderift.com) log analytics.
 
 Automatically captures request context, performance data, and error
-information — no manual `ApplicationController` changes needed.
+information — no manual `ApplicationController` changes needed. Controllers
+that inherit from `ActionController::Base` and from `ActionController::API`
+are both covered (the second needs 2.1.2 or newer).
 
 ## Installation
 
