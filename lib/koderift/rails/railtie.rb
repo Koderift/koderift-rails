@@ -69,19 +69,41 @@ module Koderift
         end
       end
 
-      # Register Sidekiq server middleware lazily when Sidekiq is present.
+      # Sidekiq middleware: the client half carries the trace into each job
+      # it enqueues; the server half runs the job as a traced unit of work.
+      # Clients run in every process, servers enqueue jobs too, so the client
+      # middleware is added to both. chain.add replaces an existing entry of
+      # the same class, so registering twice is harmless.
+      def self.register_sidekiq_middleware
+        return unless defined?(::Sidekiq) && ::Sidekiq.respond_to?(:configure_server)
+
+        require 'koderift/rails/sidekiq_middleware'
+        require 'koderift/rails/sidekiq_client_middleware'
+
+        if ::Sidekiq.respond_to?(:configure_client)
+          ::Sidekiq.configure_client do |sidekiq_config|
+            sidekiq_config.client_middleware do |chain|
+              chain.add Koderift::Rails::SidekiqClientMiddleware
+            end
+          end
+        end
+
+        ::Sidekiq.configure_server do |sidekiq_config|
+          sidekiq_config.client_middleware do |chain|
+            chain.add Koderift::Rails::SidekiqClientMiddleware
+          end
+          sidekiq_config.server_middleware do |chain|
+            chain.add Koderift::Rails::SidekiqMiddleware
+          end
+        end
+      end
+
+      # Registered lazily, once Sidekiq has had the chance to load.
       initializer 'koderift.sidekiq_middleware', after: :load_config_initializers do
         next unless Koderift::Rails.configuration.enabled
 
         ActiveSupport.on_load(:after_initialize) do
-          if defined?(Sidekiq) && Sidekiq.respond_to?(:configure_server)
-            require 'koderift/rails/sidekiq_middleware'
-            Sidekiq.configure_server do |sidekiq_config|
-              sidekiq_config.server_middleware do |chain|
-                chain.add Koderift::Rails::SidekiqMiddleware
-              end
-            end
-          end
+          Koderift::Rails::Railtie.register_sidekiq_middleware
         end
       end
     end

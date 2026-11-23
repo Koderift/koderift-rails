@@ -6,6 +6,113 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.2.0] - 2026-11-22
+
+Distributed tracing with W3C Trace Context. Traces now link with OpenTelemetry,
+Sentry and browsers, spans nest, and a request's trace continues into the
+Sidekiq jobs it enqueues.
+
+### Added
+- Incoming requests continue a trace from `X-Koderift-Traceparent`, then a W3C
+  `traceparent`, then Sentry's `sentry-trace`, then the older
+  `X-Koderift-Trace-ID`. A Koderift trace ID wins whenever it disagrees with
+  `traceparent` or `sentry-trace`, because nothing else sets it. With none of
+  them a request starts a new trace. A malformed header is ignored.
+- Outbound Net::HTTP calls send `traceparent`, naming the call's own span as the
+  parent, and any `tracestate` that arrived with the trace. A call that is not
+  recorded (to a loopback or ignored host, or made outside a request, job or
+  transaction) names the span around it instead. They also send the
+  same context in the gem's own `X-Koderift-Traceparent` header. A `traceparent`
+  already on the request (set by OpenTelemetry, Datadog, New Relic, a Sentry SDK
+  or your code) is never overwritten. Those tools rewrite `traceparent` but not
+  the Koderift header, so a Koderift app downstream still nests under the exact
+  call. `X-Koderift-Trace-ID` is still sent, now with the 32-hex trace ID, for
+  apps on older versions.
+- Sidekiq client middleware. A job enqueued inside a request, job or
+  transaction carries its trace (`koderift_traceparent`, plus
+  `koderift_trace_id` for servers on older versions). The job's line shares the
+  request's trace ID and names the enqueuing span as its parent. This covers
+  `perform_async`, `perform_in`, bulk pushes and ActiveJob on the Sidekiq
+  adapter. A job that already carries a trace keeps it, so retries and
+  scheduled jobs stay in the trace they were enqueued in.
+- Every span has a `span_id` and a `start_ms` (milliseconds from the start of
+  its request, job or transaction). `start_ms` is left out in the rare case a
+  start time cannot be placed inside its unit. Spans inside a `with_child_span` block also
+  have a `parent_span_id`. A span without one belongs to the line's root span.
+- Request, job and transaction lines gain `span_id` (their root span),
+  `parent_span_id` (the caller's span, when the trace came from one) and
+  `started_at` (UTC ISO-8601 with milliseconds). Manual captures gain `span_id`.
+- A transaction started inside a request or job joins its trace, as a child of
+  the span open there. Starting a transaction while another one is open on the
+  same thread still finishes the open one first, as in 2.1.
+
+### Changed
+- Trace IDs are W3C trace IDs, 32 lowercase hex characters, instead of UUIDs. A
+  UUID in `X-Koderift-Trace-ID` or a job's `koderift_trace_id` is still
+  accepted and normalised (dashes removed, lowercased). A value there that is
+  not a UUID is now ignored and a new trace starts; before, any string was used
+  as it was.
+- Three specs that asserted the UUID format now assert the 32-hex format.
+
+### Fixed
+- Each request and job recorded the SQL queries, partial renders and Searchkick
+  searches of every other request and job running at the same time in the
+  process (multi-threaded Puma, Sidekiq). ActiveSupport::Notifications
+  subscribers are process-wide, and the gem's were not limited to their own
+  thread. Each unit now records only its own. Per-request query counts may drop
+  slightly after you upgrade, because other threads' queries are no longer
+  included. Queries a request runs on threads or fibers it starts itself
+  (Concurrent::Promises, Parallel, `Enumerator#next`, Async tasks) are no
+  longer counted either; `load_async` queries still are.
+- A transaction started inside a request no longer stops the request recording
+  HTTP calls, custom spans and manual breadcrumbs once it finishes. Its queries
+  now appear on the transaction's line only, not on both lines.
+- A non-block transaction left unfinished can no longer leak into a later
+  request on the same thread. Before, finishing it there restored the earlier
+  request's trace ID and capture context, so later manual captures carried the
+  earlier request's ID and user. The abandoned transaction's own line, written
+  when the next transaction starts, still picks up that later request's path,
+  method, user and tags, as in 2.1.
+- A job run with `perform_inline` inside another job no longer clears that
+  job's trace and capture context. Its Koderift scope (tags and user set with
+  `set_tag` and `set_user`) is still reset, as before.
+- An exception inside one of the gem's notification callbacks can no longer
+  fail the query or render being instrumented.
+- On Rails 7.1.0-7.1.3, `load_async` queries reported durations 1000 times too
+  long.
+
+### Notes
+- No configuration needed.
+- Older Koderift app and agent versions ignore the new keys until the Koderift
+  app update that uses them. Services on older gem versions store UUID trace IDs
+  with dashes and 2.2.0 stores 32 hex, so traces across mixed versions link once
+  that update normalises stored trace IDs.
+- A caller on an older gem version that also runs Sentry, OpenTelemetry,
+  Datadog or New Relic sends that tool's trace header next to its Koderift
+  trace ID. A 2.2 service follows the Koderift trace ID, so the trace still
+  links, but the older header carries no parent span, so those requests sit
+  under the trace's root until the caller upgrades.
+- A job that enqueues itself (for example with `perform_in` at the end of
+  `perform`) stays in the trace it started in, so a self-scheduling job builds
+  one ever-growing trace.
+- Span-heavy requests grow slightly in logged bytes: each span gains about 45
+  bytes (`span_id`, `start_ms`), and a span nested in a `with_child_span` block
+  about 35 more (`parent_span_id`).
+- A Sentry browser SDK keeps one trace ID for a whole page, so every request a
+  page makes now shares a trace ID and they appear together in Koderift's
+  cross-service trace view.
+- New traces are sent as sampled (`01`), and a `sentry-trace` without a sampled
+  flag is read as sampled. A downstream service using OpenTelemetry's
+  parent-based sampler therefore records the calls it receives from your app.
+- Only Net::HTTP, and clients built on it such as Faraday's default adapter,
+  sends trace headers. They go to every host your app calls, including
+  third-party APIs. Trace and span IDs are random, but an incoming `tracestate`
+  is passed on as received.
+- A call that raises (a timeout, a refused connection) records no span, so the
+  service it reached may name a parent span that is not in your trace.
+- On Rails 7.2, an ActiveJob enqueued inside a database transaction is pushed
+  when the transaction commits, so its parent is the span open at commit.
+
 ## [2.1.2] - 2026-11-19
 
 Fixes missing request detail for controllers that inherit from

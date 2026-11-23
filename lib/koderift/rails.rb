@@ -2,6 +2,8 @@
 
 require 'koderift/rails/version'
 require 'koderift/rails/configuration'
+require 'koderift/rails/frame_stack'
+require 'koderift/rails/trace_context'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/lograge_config'
 require 'koderift/rails/event'
@@ -28,6 +30,8 @@ module Koderift
         @configuration = Configuration.new
         Capture.reset_rate_limiter!
         Scope.reset!
+        TraceContext::Current.clear!
+        Instrumentation.clear_captures!
         Breadcrumbs.clear
         RumHelper.reset_warnings!
       end

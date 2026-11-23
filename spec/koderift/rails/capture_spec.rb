@@ -361,4 +361,29 @@ RSpec.describe Koderift::Rails::Capture do
       expect(last_payload['exception']).to eq 'ArgumentError: bad token'
     end
   end
+  describe 'trace context' do
+    let(:current) { Koderift::Rails::TraceContext::Current }
+
+    it 'carries the span the capture was made in, next to the trace ID' do
+      frame    = current.push(kind: :request, trace_id: '4bf92f3577b34da6a3ce929d0e0e4736')
+      expected = nil
+
+      Koderift.with_child_span(op: 'work') do
+        expected = current.current_span_id
+        Koderift.capture_exception(raised)
+      end
+
+      expect(last_payload['trace_id']).to eq('4bf92f3577b34da6a3ce929d0e0e4736')
+      expect(last_payload['span_id']).to eq(expected)
+      expect(last_payload.keys.first).to eq('koderift_capture')
+    ensure
+      current.pop(frame)
+    end
+
+    it 'has no span_id outside a unit of work' do
+      Koderift.capture_message('hello')
+
+      expect(last_payload).not_to have_key('span_id')
+    end
+  end
 end

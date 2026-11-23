@@ -584,4 +584,237 @@ RSpec.describe Koderift::Rails::Instrumentation do
       expect(trace_id).to match(/\A[0-9a-f\-]{36}\z/)
     end
   end
+  describe 'span trace fields' do
+    def sql(text)
+      ActiveSupport::Notifications.instrument('sql.active_record', sql: text, name: 'Load') {}
+    end
+
+    # Fails loudly if start times stop being CLOCK_MONOTONIC on some Rails
+    # version: a wall-clock start would land decades outside the unit.
+    it 'measures start_ms from the unit start on the monotonic clock' do
+      before_ms = Koderift::Rails::TraceContext.now_ms
+      elapsed   = nil
+      result    = described_class.capture do
+        sleep 0.02
+        sql('SELECT late')
+        elapsed = Koderift::Rails::TraceContext.now_ms - before_ms
+      end
+
+      expect(result[:spans].first[:start_ms]).to be_between(19, elapsed.ceil)
+    end
+
+    # load_async results are replayed on the owning thread through
+    # publish_event. Rails 7.1.0-7.1.3 replays them in milliseconds where
+    # seconds are expected; both the start and the duration must come out right.
+    it 'times a replayed load_async query correctly' do
+      result = described_class.capture do
+        event = ActiveSupport::Notifications.instrumenter.new_event('sql.active_record', sql: 'SELECT async', name: 'Load')
+        event.record { sleep 0.02 }
+        ActiveSupport::Notifications.publish_event(event)
+      end
+
+      span = result[:spans].first
+      expect(span[:name]).to eq('SELECT async')
+      expect(span[:duration_ms]).to be_between(15, 1_000)
+      expect(span[:start_ms]).to be_a(Integer)
+    end
+
+    # The branch above only runs on Rails 7.1.0-7.1.3, so drive it directly:
+    # a subscriber handed millisecond times, as those versions do on replay.
+    it 'corrects a start and duration published in milliseconds' do
+      result = described_class.capture do
+        sleep 0.02
+        start = Process.clock_gettime(Process::CLOCK_MONOTONIC, :float_millisecond)
+        sleep 0.02
+        finish = Process.clock_gettime(Process::CLOCK_MONOTONIC, :float_millisecond)
+        ActiveSupport::Notifications.publish('sql.active_record', start, finish, 'replay', sql: 'SELECT replayed', name: 'Load')
+      end
+
+      span = result[:spans].first
+      expect(span[:duration_ms]).to be_between(15, 1_000)
+      expect(span[:start_ms]).to be >= 19
+    end
+
+    it 'gives every span a unique span_id' do
+      result = described_class.capture do
+        3.times { |i| sql("SELECT #{i}") }
+        ActiveSupport::Notifications.instrument('render_partial.action_view', identifier: '/app/views/a/_b.html.erb') {}
+        ActiveSupport::Notifications.instrument('search.searchkick', name: 'Thing Search') {}
+      end
+
+      ids = result[:spans].map { |s| s[:span_id] }
+      expect(ids).to all(match(/\A[0-9a-f]{16}\z/))
+      expect(ids.uniq.size).to eq(result[:spans].size)
+    end
+
+    # ActiveSupport re-raises a subscriber's exception inside the instrumented
+    # call on Rails 7.1+, so a bug in a callback would fail the host's query.
+    it 'never raises into the instrumented code' do
+      exploding = Object.new
+      def exploding.to_s
+        raise 'boom'
+      end
+
+      expect do
+        described_class.capture do
+          ActiveSupport::Notifications.instrument('sql.active_record', sql: exploding, name: 'Load') {}
+        end
+      end.not_to raise_error
+    end
+  end
+
+  describe 'trace context on outbound calls' do
+    let(:current)  { Koderift::Rails::TraceContext::Current }
+    let(:trace_id) { '4bf92f3577b34da6a3ce929d0e0e4736' }
+    let(:foreign)  { '00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01' }
+
+    def warm_http(address = 'api.stripe.com')
+      Class.new do
+        attr_reader :address
+
+        def initialize(address)
+          @address = address
+        end
+
+        def request(_req, _body = nil, &_block)
+          Net::HTTPResponse.new('1.1', '200', 'OK')
+        end
+      end.tap { |c| c.prepend(Koderift::Rails::NetHttpPatch) }.new(address)
+    end
+
+    def cold_http
+      Class.new do
+        attr_reader :address, :invocations
+
+        def initialize
+          @address     = 'sender.thelinkcm.com'
+          @started     = false
+          @invocations = 0
+        end
+
+        def started?
+          @started
+        end
+
+        def start
+          @started = true
+          yield
+        ensure
+          @started = false
+        end
+
+        def request(req, body = nil, &block)
+          @invocations += 1
+          unless started?
+            start {
+              return request(req, body, &block)
+            }
+          end
+          Net::HTTPResponse.new('1.1', '201', 'Created')
+        end
+      end.tap { |c| c.prepend(Koderift::Rails::NetHttpPatch) }.new
+    end
+
+    # A traced unit on its own thread, so nothing leaks between examples.
+    def in_unit(capture: true)
+      frame = result = nil
+      Thread.new do
+        frame = current.push(kind: :request, trace_id: trace_id, tracestate: 'rojo=1')
+        begin
+          if capture
+            result = Koderift::Rails::Instrumentation.capture { yield }
+          else
+            yield
+          end
+        ensure
+          current.pop(frame)
+        end
+      end.join
+      [frame, result]
+    end
+
+    def http_spans(result)
+      result[:spans].select { |s| s[:type] == 'http' }
+    end
+
+    it 'names the recorded HTTP span as the parent, in traceparent and in our own copy' do
+      req = Net::HTTP::Get.new('/v1/charges')
+      _frame, result = in_unit { warm_http.request(req) }
+      span = http_spans(result).first
+
+      expect(req['traceparent']).to eq("00-#{trace_id}-#{span[:span_id]}-01")
+      expect(req['X-Koderift-Traceparent']).to eq(req['traceparent'])
+      expect(req['X-Koderift-Trace-ID']).to eq(trace_id)
+      expect(req['tracestate']).to eq('rojo=1')
+      expect(span).not_to have_key(:parent_span_id)
+      expect(span[:start_ms]).to be_a(Integer)
+    end
+
+    it 'leaves a traceparent someone else set untouched, and still sends our copy' do
+      req = Net::HTTP::Get.new('/v1/charges')
+      req['traceparent'] = foreign
+      _frame, result = in_unit { warm_http.request(req) }
+      span = http_spans(result).first
+
+      expect(req['traceparent']).to eq(foreign)
+      expect(req['X-Koderift-Traceparent']).to eq("00-#{trace_id}-#{span[:span_id]}-01")
+      expect(req['tracestate']).to be_nil
+    end
+
+    it 'nests an HTTP call made inside with_child_span under that span' do
+      req = Net::HTTP::Get.new('/v1/charges')
+      _frame, result = in_unit { Koderift.with_child_span(op: 'wrap') { warm_http.request(req) } }
+      wrap = result[:spans].find { |s| s[:type] == 'custom' }
+
+      expect(http_spans(result).first[:parent_span_id]).to eq(wrap[:span_id])
+    end
+
+    it 'names the enclosing span as parent when the call is not recorded' do
+      Koderift::Rails.configure { |c| c.external_call_ignore_hosts = ['internal.example'] }
+      req = Net::HTTP::Get.new('/health')
+      _frame, result = in_unit do
+        Koderift.with_child_span(op: 'wrap') { warm_http('svc.internal.example.com').request(req) }
+      end
+      wrap = result[:spans].find { |s| s[:type] == 'custom' }
+
+      expect(http_spans(result)).to be_empty
+      expect(req['traceparent']).to eq("00-#{trace_id}-#{wrap[:span_id]}-01")
+    end
+
+    it 'still sends the trace when no capture is active' do
+      fake = Class.new do
+        def request(req, *_args)
+          req
+        end
+      end.tap { |c| c.prepend(Koderift::Rails::NetHttpPatch) }
+      req  = Net::HTTP::Get.new('/')
+      frame, _result = in_unit(capture: false) { fake.new.request(req) }
+
+      expect(req['traceparent']).to eq("00-#{trace_id}-#{frame.root_span_id}-01")
+    end
+
+    it 'sets the headers once and records one span for a re-entrant call' do
+      http = cold_http
+      req  = Net::HTTP::Post.new('/api/messages')
+      _frame, result = in_unit { http.request(req) }
+
+      expect(http.invocations).to eq(2)
+      expect(http_spans(result).size).to eq(1)
+      expect(req.get_fields('traceparent').size).to eq(1)
+      expect(req['traceparent']).to eq("00-#{trace_id}-#{http_spans(result).first[:span_id]}-01")
+    end
+
+    it 'replaces only its own earlier traceparent when a request object is reused' do
+      http = warm_http
+      req  = Net::HTTP::Get.new('/v1/charges')
+      _frame, result = in_unit do
+        http.request(req)
+        http.request(req)
+      end
+      first, second = http_spans(result)
+
+      expect(first[:span_id]).not_to eq(second[:span_id])
+      expect(req['traceparent']).to eq("00-#{trace_id}-#{second[:span_id]}-01")
+    end
+  end
 end

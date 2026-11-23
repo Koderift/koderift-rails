@@ -6,6 +6,7 @@ require 'koderift/rails/event'
 require 'koderift/rails/scope'
 require 'koderift/rails/breadcrumb'
 require 'koderift/rails/lograge_config'
+require 'koderift/rails/trace_context'
 
 module Koderift
   module Rails
@@ -189,7 +190,8 @@ module Koderift
         # sampled: sample_rate is Sentry's ERROR sample rate, and silently
         # dropping units of work would make the APM view lie about throughput.
         def transaction(component:, action:, message:, duration_ms:, request_id:,
-                        trace_id:, result:, level: 'info')
+                        trace_id:, result:, level: 'info', span_id: nil,
+                        parent_span_id: nil, started_at: nil)
           return nil unless initialized?
 
           allowed, warning = rate_limiter.allow(configuration.max_captures_per_minute)
@@ -211,9 +213,12 @@ module Koderift
             search_count:  result[:search_count]
           )
 
-          payload[:request_id]  = request_id
-          payload[:trace_id]    = trace_id
-          payload[:breadcrumbs] = result[:breadcrumbs] if result[:breadcrumbs]
+          payload[:request_id]     = request_id
+          payload[:trace_id]       = trace_id
+          payload[:span_id]        = span_id
+          payload[:parent_span_id] = parent_span_id
+          payload[:started_at]     = started_at
+          payload[:breadcrumbs]    = result[:breadcrumbs] if result[:breadcrumbs]
 
           emit(payload.compact, normalised)
           Event.new(event_id: event_id, level: normalised, message: message,
@@ -318,6 +323,7 @@ module Koderift
             action:           presence(action || scope.action || ambient[:action]),
             request_id:       presence(ambient[:request_id]),
             trace_id:         presence(Thread.current[:koderift_trace_id]),
+            span_id:          presence(TraceContext::Current.current_span_id),
             user_id:          presence(resolve_user_id(user_id, merged_user, ambient)),
             path:             presence(ambient[:path]),
             http_method:      presence(ambient[:http_method]),

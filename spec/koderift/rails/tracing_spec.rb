@@ -154,4 +154,48 @@ RSpec.describe Koderift::Rails::Tracing do
       expect(sql_listeners).to eq before
     end
   end
+  describe 'trace context' do
+    let(:current)  { Koderift::Rails::TraceContext::Current }
+    let(:trace_id) { '4bf92f3577b34da6a3ce929d0e0e4736' }
+
+    it 'starts a trace of its own when nothing is in flight' do
+      Koderift.start_transaction(name: 'nightly:sync') { nil }
+
+      expect(last_payload['trace_id']).to match(/\A[0-9a-f]{32}\z/)
+      expect(last_payload['span_id']).to match(/\A[0-9a-f]{16}\z/)
+      expect(last_payload).not_to have_key('parent_span_id')
+      expect(last_payload['started_at']).to match(/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\z/)
+    end
+
+    it 'joins the trace it is started in, as a child of the open span, and restores it after' do
+      frame  = current.push(kind: :request, trace_id: trace_id)
+      parent = nil
+
+      Koderift.with_child_span(op: 'outer') do
+        parent = current.current_span_id
+        Koderift.start_transaction(name: 'nested') { nil }
+      end
+
+      expect(last_payload['trace_id']).to eq(trace_id)
+      expect(last_payload['parent_span_id']).to eq(parent)
+      expect(last_payload['span_id']).not_to eq(parent)
+      expect(current.frame).to equal(frame)
+      expect(Thread.current[:koderift_trace_id]).to eq(trace_id)
+    ensure
+      current.pop(frame)
+    end
+
+    it 'removes a span from the right stack when a transaction outlives its block' do
+      frame       = current.push(kind: :request, trace_id: trace_id)
+      transaction = nil
+
+      Koderift.with_child_span(op: 'outer') { transaction = Koderift.start_transaction(name: 'outlives') }
+      transaction.finish
+
+      expect(frame.span_stack).to be_empty
+      expect(current.current_span_id).to eq(frame.root_span_id)
+    ensure
+      current.pop(frame)
+    end
+  end
 end

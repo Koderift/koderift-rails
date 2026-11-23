@@ -87,10 +87,11 @@ RSpec.describe Koderift::Rails::Railtie do
         expect(payload[:koderift_trace_id]).to be_present
       end
 
+      # 2.2.0: a legacy UUID trace ID is kept, normalised to 32 lowercase hex.
       it "keeps a trace ID sent by the calling service" do
-        payload = dispatch(controller, 'HTTP_X_KODERIFT_TRACE_ID' => 'trace-from-upstream')
+        payload = dispatch(controller, 'HTTP_X_KODERIFT_TRACE_ID' => '0AF76519-16CD-43DD-8448-EB211C80319C')
 
-        expect(payload[:koderift_trace_id]).to eq('trace-from-upstream')
+        expect(payload[:koderift_trace_id]).to eq('0af7651916cd43dd8448eb211c80319c')
       end
 
       it 'records the spans, counts and breadcrumbs of what the action did' do
@@ -111,6 +112,39 @@ RSpec.describe Koderift::Rails::Railtie do
 
         expect(koderift_wraps(controller)).to eq(1)
       end
+    end
+  end
+  describe '.register_sidekiq_middleware' do
+    before { require 'sidekiq' }
+
+    let(:sidekiq_config) { Sidekiq.respond_to?(:default_configuration) ? Sidekiq.default_configuration : Sidekiq }
+
+    after do
+      sidekiq_config.client_middleware { |chain| chain.remove(Koderift::Rails::SidekiqClientMiddleware) }
+      sidekiq_config.server_middleware { |chain| chain.remove(Koderift::Rails::SidekiqMiddleware) }
+    end
+
+    it 'adds the client middleware in a process that only enqueues' do
+      allow(Sidekiq).to receive(:server?).and_return(false)
+      described_class.register_sidekiq_middleware
+
+      expect(sidekiq_config.client_middleware.exists?(Koderift::Rails::SidekiqClientMiddleware)).to be true
+      expect(sidekiq_config.server_middleware.exists?(Koderift::Rails::SidekiqMiddleware)).to be false
+    end
+
+    it 'adds both client and server middleware in a Sidekiq server, since jobs enqueue jobs' do
+      allow(Sidekiq).to receive(:server?).and_return(true)
+      described_class.register_sidekiq_middleware
+
+      expect(sidekiq_config.client_middleware.exists?(Koderift::Rails::SidekiqClientMiddleware)).to be true
+      expect(sidekiq_config.server_middleware.exists?(Koderift::Rails::SidekiqMiddleware)).to be true
+    end
+
+    it 'adds each middleware once however often it runs' do
+      allow(Sidekiq).to receive(:server?).and_return(true)
+      2.times { described_class.register_sidekiq_middleware }
+
+      expect(sidekiq_config.server_middleware.entries.count { |e| e.klass == Koderift::Rails::SidekiqMiddleware }).to eq(1)
     end
   end
 end

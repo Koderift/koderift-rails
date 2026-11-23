@@ -104,6 +104,26 @@ RSpec.describe Koderift::Rails::LogrageConfig do
       expect(result[:request_id]).to eq('req-123')
     end
 
+    it 'adds span_id, parent_span_id and started_at when the request has them' do
+      result = apply_and_call(double('event', payload: event.payload.merge(
+        koderift_span_id:        '00f067aa0ba902b7',
+        koderift_parent_span_id: 'b7ad6b7169203331',
+        koderift_started_at:     '2026-11-22T10:15:30.123Z'
+      )))
+
+      expect(result).to include(span_id:        '00f067aa0ba902b7',
+                                parent_span_id: 'b7ad6b7169203331',
+                                started_at:     '2026-11-22T10:15:30.123Z')
+    end
+
+    it 'leaves the trace keys out when they are absent' do
+      result = apply_and_call(event)
+
+      expect(result).not_to have_key(:span_id)
+      expect(result).not_to have_key(:parent_span_id)
+      expect(result).not_to have_key(:started_at)
+    end
+
     it 'emits spans and scalar counts' do
       result = apply_and_call(event)
       expect(result[:spans]).to eq(spans)

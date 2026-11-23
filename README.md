@@ -72,12 +72,69 @@ the agent's `agent.yml`. See the [changelog](CHANGELOG.md).
 * DB runtime, view runtime, allocations
 * Current user ID
 * Request ID, IP address, user agent, referer
+* Trace ID, span IDs and start offsets (see [Distributed tracing](#distributed-tracing))
 * Request params (filtered — passwords, tokens etc removed)
 * Top 5 slowest partials with render times
 * Top 5 slowest SQL queries
 * Last 20 breadcrumbs (ordered partial renders + SQL queries)
 * Exception class, message, and cause chain
 * Stack traces (requires `keep_original_rails_log: true`)
+
+## Distributed tracing
+
+The gem continues a trace that reaches your app and passes it on. There is
+nothing to configure.
+
+Incoming requests continue the first usable trace header, in this order:
+
+1. `X-Koderift-Traceparent`: the gem's own copy, sent by another app running
+   koderift-rails 2.2 or later
+2. `traceparent`: W3C Trace Context, sent by OpenTelemetry, recent Sentry SDKs
+   and other tracing tools
+3. `sentry-trace`: sent by Sentry SDKs, including the browser SDK
+4. `X-Koderift-Trace-ID`: sent by koderift-rails before 2.2 (a UUID)
+
+A Koderift trace ID wins whenever it disagrees with `traceparent` or
+`sentry-trace`, because nothing else sets it. That keeps a caller on an older
+version linked when it also runs Sentry or an APM; its requests sit under the
+trace's root, since the older header carries no parent span. With none of the
+headers, the request starts a new trace. A malformed header is ignored.
+
+Outbound Net::HTTP calls carry the trace on:
+
+* `traceparent` names the call's own span as the parent (or the span around the
+  call, when the call itself is not recorded), and any `tracestate` that came in
+  with the trace goes with it. If the request already has a
+  `traceparent`, set by OpenTelemetry, Datadog, New Relic, a Sentry SDK or your
+  own code, the gem leaves it alone, so it works alongside those tools.
+* `X-Koderift-Traceparent` carries the same context in a header those tools
+  don't touch. When one of them rewrites `traceparent`, a Koderift app
+  downstream still nests under the exact call that reached it, which is why
+  this header comes first above.
+* `X-Koderift-Trace-ID` carries the trace ID alone, for apps on older versions.
+
+Only Net::HTTP, and clients built on it such as Faraday's default adapter,
+sends these headers. They go to every host your app calls, including
+third-party APIs; trace and span IDs are random, but an incoming `tracestate` is
+passed on as received.
+
+Sidekiq jobs enqueued inside a request, job or transaction carry its trace.
+The job's line shares the trace ID and names the span that enqueued it as its
+parent. That includes `perform_in` (the trace is stored when the job is
+scheduled), bulk pushes and ActiveJob on the Sidekiq adapter. A job that
+already carries a trace keeps it, so a retry stays in its original trace. On
+Rails 7.2, an ActiveJob enqueued inside a database transaction is pushed at
+commit, so its parent is the span open then. A job that enqueues itself stays in
+the trace it started in.
+
+In the log lines, every request, job and transaction line has a `trace_id`
+(32 hex), its own `span_id`, a `started_at` time, and a `parent_span_id` when
+the trace came from a caller. Every span has a `span_id` and, unless its start
+cannot be placed inside the unit, a `start_ms` offset; a span inside a
+`with_child_span` block names that block as its `parent_span_id`.
+
+New traces are marked sampled, so a downstream service using OpenTelemetry's
+parent-based sampler records the calls your app makes to it.
 
 ## Reporting handled errors
 
@@ -224,7 +281,7 @@ find out at migration time rather than from a silent no-op.
 | --- | --- |
 | `capture_check_in` | Cron *monitors* — alerting when a job never runs. Cron errors and slowness are covered (above); detecting an absence needs schedule definitions Koderift does not have yet. |
 | `close`, `clone_hub_to_current_thread`, `with_session_tracking` | Nothing to do behind them: captures are written synchronously with no in-process buffer, and all state is already thread-local. |
-| `get_traceparent`, `get_baggage` | Distributed tracing works, via the `X-Koderift-Trace-ID` header this gem already propagates. |
+| `get_traceparent`, `get_baggage` | Trace context is read and sent automatically (see [Distributed tracing](#distributed-tracing)); there is no call to read it. |
 | Profiling, release health | Configured inside `Sentry.init` with no call sites, so nothing to replace. Release comparison is on the Koderift deploy-impact view, keyed by the agent's `app_version`. |
 
 ## Requirements

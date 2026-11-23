@@ -113,17 +113,19 @@ RSpec.describe Koderift::Rails::SidekiqMiddleware do
       expect(log_lines).to be_empty
     end
 
+    # 2.2.0: a legacy UUID trace ID is kept, normalised to 32 lowercase hex.
     it 'inherits trace_id from job payload when present' do
-      job['koderift_trace_id'] = 'upstream-trace-abc'
+      job['koderift_trace_id'] = '4bf92f35-77b3-4da6-a3ce-929d0e0e4736'
       middleware.call(worker, job, queue) { nil }
       parsed = JSON.parse(log_lines.last)
-      expect(parsed['trace_id']).to eq 'upstream-trace-abc'
+      expect(parsed['trace_id']).to eq '4bf92f3577b34da6a3ce929d0e0e4736'
     end
 
+    # 2.2.0: trace IDs are W3C trace IDs, 32 lowercase hex, not UUIDs.
     it 'generates a trace_id when job payload has none' do
       middleware.call(worker, job, queue) { nil }
       parsed = JSON.parse(log_lines.last)
-      expect(parsed['trace_id']).to match(/\A[0-9a-f-]{36}\z/)
+      expect(parsed['trace_id']).to match(/\A[0-9a-f]{32}\z/)
     end
 
     it 'sets trace_id thread-local during job execution' do
