@@ -232,6 +232,10 @@ Prefer this block form: `start_transaction` without a block returns a
 transaction you must `finish` yourself, and an abandoned one leaves notification
 subscribers attached to the process.
 
+With sentry-ruby initialised as well (and a project token set), each rake run
+outside the long-running worker tasks gets a request ID, which both reports of
+a failure carry (see [Using with sentry-ruby](#using-with-sentry-ruby)).
+
 ### Configuration
 
 ```ruby
@@ -249,6 +253,8 @@ the log when it starts dropping and how many it dropped.
 ## Migrating from Sentry
 
 Replace the `Sentry` namespace with `Koderift`; the call sites keep working.
+To keep sentry-ruby running beside this gem instead, see
+[Using with sentry-ruby](#using-with-sentry-ruby).
 
 | Sentry | Koderift |
 | --- | --- |
@@ -283,6 +289,101 @@ find out at migration time rather than from a silent no-op.
 | `close`, `clone_hub_to_current_thread`, `with_session_tracking` | Nothing to do behind them: captures are written synchronously with no in-process buffer, and all state is already thread-local. |
 | `get_traceparent`, `get_baggage` | Trace context is read and sent automatically (see [Distributed tracing](#distributed-tracing)); there is no call to read it. |
 | Profiling, release health | Configured inside `Sentry.init` with no call sites, so nothing to replace. Release comparison is on the Koderift deploy-impact view, keyed by the agent's `app_version`. |
+
+## Using with sentry-ruby
+
+You can run sentry-ruby, with sentry-rails and sentry-sidekiq, beside this
+gem. Both keep reporting: the gem keeps writing its log lines, so your logs stay
+complete and searchable, and Sentry keeps sending its events. Koderift counts an
+error that reaches it both ways once. It pairs the Sentry event with the gem's
+line when the two share a key (the jid, else the request ID) and the same
+exception class.
+
+`Koderift.capture_exception` and `capture_message` are never forwarded to
+Sentry. Forwarding would only add a second Sentry report beside sentry-ruby's
+own integrations.
+
+When sentry-ruby is initialised, and this gem is enabled with a project token,
+Sentry's error events get these tags:
+
+| Tag | Value |
+| --- | --- |
+| `request_id` | Added only when Sentry has none. sentry-rails sets it inside a request. For a Sidekiq job it is the jid, and in a rake run the run ID (below). |
+| `koderift_trace_id` | The trace of the gem's line for the same request or job. |
+| `koderift_span_id` | That line's span. For a capture made inside a `with_child_span` block, it is that block's span. |
+
+A tag that is already set is never overwritten. At most three tags are added,
+never taking an event past 50. Check-ins and transactions are left as they are.
+
+sentry-rails reports a request's exception from Rack middleware, and
+sentry-sidekiq reports a job's failure from Sidekiq's error handlers. Both run
+after the gem has finished with that request or job, so the trace comes from
+where the gem left it.
+
+* **Requests.** The gem reads the trace from the request Sentry is reporting
+  (its Rack env, where the controller stores it), and only when that request's
+  ID is the event's request ID. This covers `ActionController::Live` actions.
+  A request that fails before the controller runs (in a middleware, or a
+  `prepend_before_action`) has no trace there and gets none, even if a client
+  reused the ID of an earlier request.
+* **Jobs.** The gem keeps the IDs of the job that last finished on each thread,
+  and uses them only when the event's jid names that job and Sentry reports on
+  the hub the job ran on. sentry-sidekiq gives every attempt its own hub, so a
+  retry that fails before it reaches the gem's middleware never takes the
+  previous attempt's trace. Each Sidekiq thread keeps its own, so concurrent
+  threads never see each other's.
+
+An event whose key names another request or job gets no tags.
+
+**Rake.** Each rake run gets one request ID, a UUID. Three things carry it:
+
+* the gem's capture line for an uncaught failure;
+* any other capture made during the run outside a request, job or transaction;
+* Sentry's rake event.
+
+So a rake failure reported both ways counts once. A task invoked twice in one
+process keeps the same ID, and so do threads the task starts. Jobs the task
+enqueues keep their own jid.
+
+A run that includes a long-running worker task gets no run ID: one ID for weeks
+of unrelated errors would pair errors that are not the same occurrence. The
+worker tasks are `jobs:work`, `jobs:workoff`, `resque:work`, `resque:workers`,
+`resque:scheduler`, `solid_queue:start`, `sneakers:run`, `qc:work`, `que:work`,
+and Backburner's `backburner:work` and `backburner:<strategy>:work` tasks. Add
+your own:
+
+```ruby
+Koderift::Rails.configure do |config|
+  config.rake_worker_tasks += %w[mailroom:poll]
+  # config.sentry_bridge = false   # leave Sentry's events exactly as Sentry builds them
+end
+```
+
+Limits:
+
+* An event with no request ID or jid of its own, captured after its request or
+  job has finished, gets no tags.
+* A capture inside `Koderift.start_transaction` carries the transaction's own
+  request ID, not the request's or job's.
+* `Koderift.capture_exception` inside a `rescue_from` handler runs after the
+  request's context has closed, so its line has no `request_id`. Sentry's event
+  from the same handler has one, so that pair still counts twice.
+* Under Spring, a rake command usually computes its run ID in the forked
+  command, but if the preloaded app worked it out first, every command it forks
+  goes without one.
+* sentry-ruby keeps one hub per thread unless told otherwise (5.x always
+  does). On a fiber-per-request server such as Falcon, concurrent requests
+  then share it, and Sentry can report one request's error with another
+  request's env and request ID; the bridge then adds that request's trace too.
+  Set sentry-ruby's `config.hub_isolation_level = :fiber` there (7.x, Ruby 3.2+).
+* With `:fiber`, a pooled thread started during a request keeps that
+  request's Sentry scope (Rails 8.0+ runs `ActionController::Live` actions on
+  such a pool). Sentry can then report later errors on that thread under the
+  earlier request's ID, and the bridge may add that request's trace.
+
+The gem never requires sentry-ruby. Without it, or with it loaded but not
+initialised, nothing changes. Tested with sentry-ruby 7.3.0 and 5.22.4, and with
+sentry-rails and sentry-sidekiq 7.3.0 in a Rails 8.1 app.
 
 ## Requirements
 

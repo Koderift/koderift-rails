@@ -6,6 +6,75 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.3.0] - 2026-11-23
+
+Works alongside sentry-ruby. Sentry's error events now carry the keys Koderift
+pairs them on, so an error reported both ways counts once, rake failures
+included, and an SDK error can be linked to the Koderift trace.
+
+### Added
+- **sentry-ruby bridge.** When sentry-ruby is initialised, and this gem is
+  enabled with a project token, Sentry's error events gain three tags. Each
+  comes from the gem's line for the same request, job or rake run.
+  - `request_id`, only when Sentry has none. For a job it is the jid, and in a
+    rake run the run ID.
+  - `koderift_trace_id`.
+  - `koderift_span_id`.
+
+  An app's own tags are never overwritten. At most three are added, never
+  taking an event past 50. Check-ins and transactions are left as they are.
+- sentry-rails and sentry-sidekiq report after the request or job has
+  finished, and their events still get its IDs:
+  - A request's IDs come from the Rack env Sentry is reporting, when that
+    request's ID is the event's. This covers `ActionController::Live`. A
+    request that failed before the controller ran gets none, even under a
+    reused `X-Request-Id`.
+  - A job's IDs come from the job that last finished on that thread, when the
+    event's jid names it and Sentry reports on the hub that job ran on. With
+    sentry-sidekiq, which gives every attempt its own hub, a retry that failed
+    before reaching the gem's middleware gets none.
+  - An event whose key names another request or job gets nothing.
+- The bridge registers one Sentry event processor once the app's initializers
+  have run, and checks again cheaply at each request, job and rake failure in
+  case Sentry is initialised later. It is added back if something clears
+  Sentry's processor list, as `Sentry::TestHelper` does. If adding it fails,
+  the bridge stays off rather than retrying on every request. An app's own
+  autoloadable `Sentry` constant is never loaded by the check.
+- The processor never raises, never drops an event and allocates nothing
+  beyond the tags it adds.
+- `config.sentry_bridge` (default `true`) turns the bridge off.
+- The gem never requires sentry-ruby. Without it, or with it loaded but not
+  initialised, nothing changes.
+- **Rake run ID.** With the bridge active, each rake run gets one request ID, a
+  UUID. The capture line for an uncaught failure carries it, and so does
+  Sentry's rake event.
+- A task invoked twice in one process keeps the same ID, and so do threads the
+  task starts.
+- A run that includes a long-running worker task gets none. The list is
+  `config.rake_worker_tasks`, which defaults to `jobs:work`, `jobs:workoff`,
+  `resque:work`, `resque:workers`, `resque:scheduler`, `solid_queue:start`,
+  `sneakers:run`, `qc:work`, `que:work`, and Backburner's `backburner:work`
+  and `backburner:<strategy>:work`. Task arguments are ignored.
+- Tested with sentry-ruby 7.3.0 and 5.22.4.
+
+### Changed
+- When the bridge is active, a rake failure's capture line carries a
+  `request_id`, the rake run ID. So does any other capture made during a rake
+  run outside a request, job or transaction. `before_send` callbacks see it
+  too. Without sentry-ruby, capture lines are unchanged.
+- `Koderift.capture_exception` and `capture_message` are not forwarded to
+  Sentry, and behave exactly as before. Both reporting paths stay on, because
+  Koderift counts an error reported both ways once.
+
+### Development
+- `bundle exec rspec spec_sentry` runs the bridge's suite with sentry-ruby
+  7.3.0. sentry-ruby is a development dependency (`require: false`), never a
+  runtime one. The main suite stays free of sentry-ruby and fails if it gets
+  loaded.
+- `spec/fixtures/sentry_bridge/` holds real envelopes and log lines from a Rails
+  8.1 app running sentry-ruby, sentry-rails and sentry-sidekiq 7.3.0, one each
+  for a request, a job and a rake run.
+
 ## [2.2.0] - 2026-11-22
 
 Distributed tracing with W3C Trace Context. Traces now link with OpenTelemetry,

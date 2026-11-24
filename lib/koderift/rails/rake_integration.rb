@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'koderift/rails/sentry_bridge'
+
 module Koderift
   module Rails
     # Captures uncaught rake task failures.
@@ -24,9 +26,14 @@ module Koderift
       # A clean `exit` inside a task reaches this hook as a SystemExit. It is
       # the task finishing, not failing, and reporting it would file an error
       # for every well-behaved task that exits explicitly.
+      #
+      # With sentry-ruby initialised, the capture line carries the run's
+      # request ID (SentryBridge.rake_run_id), as Sentry's own rake event
+      # does, so Koderift counts a failure reported both ways once.
       def self.report(exception)
         return if exception.is_a?(SystemExit)
 
+        Koderift::Rails::SentryBridge.install_if_ready
         Koderift.capture_exception(exception, component: task_name, action: 'rake')
       rescue StandardError
         nil

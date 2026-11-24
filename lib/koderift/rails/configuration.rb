@@ -71,6 +71,29 @@ module Koderift
       # every call is something the application asked for explicitly.
       attr_accessor :excluded_exceptions
 
+      # When sentry-ruby is also initialised, add the keys Koderift pairs on
+      # to Sentry's error events: `request_id` (only when Sentry has none),
+      # `koderift_trace_id` and `koderift_span_id`, and give each rake run a
+      # request ID. An app's own tags are never overwritten. Both reporting
+      # paths stay on: Koderift counts an error reported both ways once.
+      # Set to false to leave Sentry's events exactly as Sentry builds them.
+      attr_accessor :sentry_bridge
+
+      # Rake tasks that run a long-lived worker. A rake run that includes any
+      # of them (arguments ignored) gets no rake run ID, because one ID for
+      # weeks of unrelated errors would let Koderift pair errors that are not
+      # the same occurrence. Add your own long-running tasks here.
+      attr_accessor :rake_worker_tasks
+
+      # Listing a task only costs that task's pairing, so the list errs broad.
+      DEFAULT_RAKE_WORKER_TASKS = %w[
+        jobs:work jobs:workoff
+        resque:work resque:workers resque:scheduler
+        solid_queue:start sneakers:run qc:work que:work
+        backburner:work backburner:simple:work backburner:forking:work
+        backburner:threading:work backburner:threads_on_fork:work
+      ].freeze
+
       def initialize
         @project_token     = nil
         @rum_token         = nil
@@ -90,6 +113,8 @@ module Koderift
         @sample_rate                = 1.0
         @before_send                = nil
         @excluded_exceptions        = []
+        @sentry_bridge              = true
+        @rake_worker_tasks          = DEFAULT_RAKE_WORKER_TASKS.dup
       end
 
       def valid?

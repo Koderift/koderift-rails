@@ -17,6 +17,14 @@ RSpec.configure do |config|
   config.before(:each) do
     Koderift::Rails.reset!
   end
+
+  # The main suite shows the gem works, and changes nothing, without
+  # sentry-ruby. spec_sentry/ (its own process) covers the bridge.
+  config.after(:suite) do
+    if defined?(::Sentry) && !defined?(KODERIFT_SENTRY_SUITE)
+      raise 'sentry-ruby was loaded during the main suite; run spec_sentry/ on its own'
+    end
+  end
 end
 
 # Stands in for Rails.logger and collects everything the gem writes, so a spec

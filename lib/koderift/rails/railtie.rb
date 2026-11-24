@@ -57,8 +57,10 @@ module Koderift
 
       # Capture uncaught rake task failures. Rake is loaded before the Rails
       # environment under `bundle exec rake` / `bin/rails <task>`, so the
-      # constant is present by the time initializers run; under a web server it
-      # is not, and the guard makes this a no-cost skip.
+      # constant is present by the time initializers run. Under a web server
+      # it usually is not, and the guard makes this a no-cost skip; with
+      # sentry-ruby it is (sentry-ruby loads rake everywhere), and the hook is
+      # installed but never called.
       initializer 'koderift.rake_integration', after: :load_config_initializers do
         next unless Koderift::Rails.configuration.enabled
         next unless defined?(::Rake::Application)
@@ -95,6 +97,18 @@ module Koderift
           sidekiq_config.server_middleware do |chain|
             chain.add Koderift::Rails::SidekiqMiddleware
           end
+        end
+      end
+
+      # The sentry-ruby bridge (SentryBridge). Checked once the app's
+      # initializers have run, so a Sentry.init in config/initializers has
+      # happened; requests, jobs and rake failures check again cheaply in case
+      # Sentry is initialised later. Without sentry-ruby this does nothing.
+      initializer 'koderift.sentry_bridge', after: :load_config_initializers do |app|
+        next unless Koderift::Rails.configuration.enabled
+
+        app.config.after_initialize do
+          Koderift::Rails::SentryBridge.install_if_ready
         end
       end
 

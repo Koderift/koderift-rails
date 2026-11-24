@@ -4,6 +4,7 @@ require 'active_support/concern'
 require 'koderift/rails/trace_context'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/scope'
+require 'koderift/rails/sentry_bridge'
 
 module Koderift
   module Rails
@@ -17,6 +18,7 @@ module Koderift
       private
 
       def koderift_instrument_request
+        Koderift::Rails::SentryBridge.install_if_ready
         started_at_ms = Koderift::Rails::TraceContext.now_ms
 
         # Ambient context for manual captures. Koderift.capture_exception can be

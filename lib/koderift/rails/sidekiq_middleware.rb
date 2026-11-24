@@ -4,6 +4,7 @@ require 'json'
 require 'koderift/rails/trace_context'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/scope'
+require 'koderift/rails/sentry_bridge'
 
 module Koderift
   module Rails
@@ -16,6 +17,7 @@ module Koderift
         config = Koderift::Rails.configuration
         return yield unless config.enabled && config.project_token.present?
 
+        SentryBridge.install_if_ready
         started_at_ms = TraceContext.now_ms
         trace_frame   = start_trace(job, started_at_ms)
         trace         = trace_fields(trace_frame)
@@ -32,6 +34,10 @@ module Koderift
           emit_job_log(worker, job, queue, empty_result, duration_ms, trace, error: e)
           raise
         ensure
+          # sentry-sidekiq reports a failure from Sidekiq's error handlers,
+          # after this has finished; this leaves it the job's trace on this
+          # thread. A no-op without an initialised sentry-ruby.
+          SentryBridge.record_closed_job(job, trace)
           if trace_frame
             # Clears the trace and context, or, for a job run with
             # perform_inline inside another unit, hands that unit back its own.

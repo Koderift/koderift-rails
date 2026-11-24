@@ -7,6 +7,7 @@ require 'koderift/rails/scope'
 require 'koderift/rails/breadcrumb'
 require 'koderift/rails/lograge_config'
 require 'koderift/rails/trace_context'
+require 'koderift/rails/sentry_bridge'
 
 module Koderift
   module Rails
@@ -308,7 +309,8 @@ module Koderift
                          error_cause:, tags:, extra:, user:, contexts:,
                          component:, action:, user_id:)
           scope   = Scope.current
-          ambient = Thread.current[CONTEXT_KEY] || {}
+          context = Thread.current[CONTEXT_KEY]
+          ambient = context || {}
 
           merged_user = scope.user.merge(stringify(user))
 
@@ -321,7 +323,7 @@ module Koderift
             error_cause:      presence(truncate(error_cause.to_s, MAX_ERROR_CAUSE)),
             component:        presence(component || scope.component || ambient[:component]),
             action:           presence(action || scope.action || ambient[:action]),
-            request_id:       presence(ambient[:request_id]),
+            request_id:       presence(ambient[:request_id]) || outside_unit_request_id(context),
             trace_id:         presence(Thread.current[:koderift_trace_id]),
             span_id:          presence(TraceContext::Current.current_span_id),
             user_id:          presence(resolve_user_id(user_id, merged_user, ambient)),
@@ -330,6 +332,14 @@ module Koderift
             context:          build_context(event_id, scope, tags, extra,
                                             contexts, merged_user)
           }
+        end
+
+        # Outside any request, job or transaction, the rake run ID when the
+        # sentry-ruby bridge is active, so a rake failure's capture line pairs
+        # with Sentry's rake event (SentryBridge.rake_run_id). Inside a unit
+        # the unit's own ID is kept, even when it is blank.
+        def outside_unit_request_id(context)
+          context.nil? ? SentryBridge.rake_run_id : nil
         end
 
         def build_context(event_id, scope, tags, extra, contexts, merged_user)
