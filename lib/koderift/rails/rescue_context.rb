@@ -68,8 +68,12 @@ module Koderift
       KEPT_SCOPE_IVAR  = :@koderift_rescue_scope
       KEPT_CRUMBS_IVAR = :@koderift_rescue_crumbs
 
-      ENV_TRACE_ID = 'koderift.trace_id'
-      ENV_SPAN_ID  = 'koderift.span_id'
+      # The request's own trace frame, kept on its ActionDispatch::Request by
+      # the around_action and taken by append_info_to_payload. A second
+      # controller dispatched on the same env (an exceptions_app error page)
+      # has a Request of its own, so it never inherits this one's trace from
+      # the env keys, which SentryBridge reads and which stay as they were.
+      TRACE_FRAME_IVAR = :@koderift_trace_frame
 
       EMPTY_CONTEXT = {}.freeze
 
@@ -176,14 +180,24 @@ module Koderift
           EMPTY_CONTEXT
         end
 
+        # The trace and root span the request line carries: those of this
+        # controller's own hook, or none when its hook never ran.
+        def trace_frame(request)
+          request.instance_variable_defined?(TRACE_FRAME_IVAR) ? request.instance_variable_get(TRACE_FRAME_IVAR) : nil
+        rescue StandardError
+          nil
+        end
+
         def trace_id(controller)
-          controller.request.env[ENV_TRACE_ID]
+          frame = trace_frame(controller.request)
+          frame && frame.trace_id
         rescue StandardError
           nil
         end
 
         def span_id(controller)
-          controller.request.env[ENV_SPAN_ID]
+          frame = trace_frame(controller.request)
+          frame && frame.root_span_id
         rescue StandardError
           nil
         end

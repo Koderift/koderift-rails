@@ -146,10 +146,14 @@ module Koderift
           started_at_ms:  started_at_ms
         )
 
+        # The env keys are for SentryBridge (rule 3), which reads the env Sentry
+        # reports from Rack middleware. This dispatch's own line and handler
+        # read the frame kept on its Request (RescueContext::TRACE_FRAME_IVAR).
         request.env['koderift.trace_id']       = frame.trace_id
         request.env['koderift.span_id']        = frame.root_span_id
         request.env['koderift.parent_span_id'] = frame.parent_span_id
         request.env['koderift.started_at']     = frame.started_at
+        request.instance_variable_set(Koderift::Rails::RescueContext::TRACE_FRAME_IVAR, frame)
         frame
       rescue StandardError
         Thread.current[:koderift_context] = context
@@ -180,10 +184,13 @@ module Koderift
         payload[:koderift_ip]           = request.remote_ip
         payload[:koderift_user_agent]   = request.user_agent
         payload[:koderift_request_id]   = request.request_id
-        payload[:koderift_trace_id]     = request.env['koderift.trace_id']
-        payload[:koderift_span_id]        = request.env['koderift.span_id']
-        payload[:koderift_parent_span_id] = request.env['koderift.parent_span_id']
-        payload[:koderift_started_at]     = request.env['koderift.started_at']
+        # This dispatch's own trace, not whatever an earlier controller on the
+        # same env left in it.
+        trace = koderift_take(Koderift::Rails::RescueContext::TRACE_FRAME_IVAR)
+        payload[:koderift_trace_id]       = trace && trace.trace_id
+        payload[:koderift_span_id]        = trace && trace.root_span_id
+        payload[:koderift_parent_span_id] = trace && trace.parent_span_id
+        payload[:koderift_started_at]     = trace && trace.started_at
         payload[:koderift_referer]      = request.referer
         payload[:koderift_params]       = filtered_params.to_h
         result = koderift_take(KODERIFT_RESULT_IVAR) || {}

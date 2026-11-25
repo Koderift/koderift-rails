@@ -235,6 +235,70 @@ RSpec.describe 'requests and jobs that raise' do
       expect(request.instance_variables.grep(/koderift/)).to be_empty
     end
 
+    # 2.4.1: a second controller dispatched on the same env (an exceptions_app
+    # error page) used to take the first one's trace from the env keys.
+    describe 'a second controller dispatched on the same env' do
+      let(:failing) do
+        Class.new(widgets) do
+          define_singleton_method(:name) { 'FirstOnEnvController' }
+          def fail_first
+            ActiveSupport::Notifications.instrument('sql.active_record', sql: 'SELECT first', name: 'Load') {}
+            raise ErroredUnitsSpecError, 'first fails'
+          end
+        end
+      end
+
+      def both_lines(second, action)
+        payloads = []
+        sub = ActiveSupport::Notifications.subscribe('process_action.action_controller') { |*a| payloads << a.last }
+        env = env_for
+        begin
+          failing.action(:fail_first).call(env)
+        rescue ErroredUnitsSpecError
+          nil
+        end
+        second.action(action).call(env)
+        ActiveSupport::Notifications.unsubscribe(sub)
+        payloads.map { |p| lograge_line(p) }
+      end
+
+      it "whose hook never runs carries no trace or span of the first one's, on its line or in its handler" do
+        errors = Class.new(ActionController::Base) do
+          define_singleton_method(:name) { 'HooklessErrorsController' }
+          prepend_before_action { raise KeyError, 'error page before the hook' }
+          rescue_from(KeyError) do |error|
+            Koderift.capture_exception(error)
+            head 500
+          end
+          def show; end
+        end
+
+        first, second = both_lines(errors, :show)
+
+        expect(first[:span_id]).to match(/\A[0-9a-f]{16}\z/)
+        expect(first[:spans].map { |s| s[:name] }).to eq(['SELECT first'])
+        expect(second).not_to include(:trace_id, :span_id, :parent_span_id, :started_at, :spans)
+        expect(second[:request_id]).to eq('req-1')
+        expect(capture('error page before the hook')).not_to include('trace_id', 'span_id')
+        expect(capture('error page before the hook')['request_id']).to eq('req-1')
+      end
+
+      it 'whose hook runs carries its own trace and span, not the first one\'s' do
+        errors = Class.new(ActionController::Base) do
+          define_singleton_method(:name) { 'HookedErrorsController' }
+          def show
+            head 500
+          end
+        end
+
+        first, second = both_lines(errors, :show)
+
+        expect(second[:span_id]).to match(/\A[0-9a-f]{16}\z/)
+        expect(second[:span_id]).not_to eq(first[:span_id])
+        expect(second[:trace_id]).not_to eq(first[:trace_id])
+      end
+    end
+
     it 'leaves nothing on the Request for a second controller handed the same one (X-Cascade)' do
       request = ActionDispatch::Request.new(env_for)
       widgets.new.dispatch(:boom, request, ActionDispatch::Response.new)

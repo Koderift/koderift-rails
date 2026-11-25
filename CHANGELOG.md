@@ -6,6 +6,23 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.4.1] - 2026-11-24
+
+### Fixed
+- A second controller dispatched on the same request env, such as an
+  `exceptions_app` error page, no longer takes the first controller's
+  `trace_id`, `span_id`, `parent_span_id` and `started_at` when the gem's hook
+  did not run for it (a `prepend_before_action` or CSRF failure, or a skipped
+  hook). Its request line, and the captures in its `rescue_from` handler, now
+  carry no trace, as for any request whose hook never ran. Before, its line
+  pointed at the first line's span, so a join of spans to lines could count the
+  first request's spans twice. Each dispatch now reads its trace from its own
+  request object. The env keys are unchanged, and the sentry-ruby bridge still
+  reads them.
+
+### Development
+- Specs for both cases in `spec/koderift/rails/errored_units_spec.rb`.
+
 ## [2.4.0] - 2026-11-24
 
 A request or job that raises keeps what it recorded before the raise, so its
