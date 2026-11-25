@@ -70,6 +70,12 @@ module Koderift
         stack ? stack.any? { |f| f.equal?(frame) } : false
       end
 
+      # Whether any frame on this thread's stack matches the block.
+      def any?
+        stack = Thread.current[@stack_key]
+        stack ? stack.any? { |f| yield f } : false
+      end
+
       def top
         stack = Thread.current[@stack_key]
         stack && stack.last

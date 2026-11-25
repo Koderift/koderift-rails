@@ -80,6 +80,14 @@ the agent's `agent.yml`. See the [changelog](CHANGELOG.md).
 * Exception class, message, and cause chain
 * Stack traces (requires `keep_original_rails_log: true`)
 
+A request or Sidekiq job that raises, or a request that ends in `throw`, keeps
+everything it recorded up to that point: its spans, query, partial and search
+counts, and breadcrumbs. When a `rescue_from` handler takes the exception, the
+request line also says which class it rescued (`rescued`), and its counts are
+the action's, up to the raise. Queries and renders in the handler itself are
+not recorded. A request that raised before the gem's hook ran (Rails' default
+CSRF check, a `prepend_before_action`) has no spans or counts.
+
 ## Distributed tracing
 
 The gem continues a trace that reaches your app and passes it on. There is
@@ -211,8 +219,15 @@ end
 
 Scope is per-thread and reset at the end of every request (after any
 `rescue_from` handler) and job. Breadcrumbs interleave with the SQL and render
-crumbs the gem already collects. A child span becomes a `custom` span in the
-APM trace, next to the SQL and HTTP spans.
+crumbs the gem already collects. `scope.clear_breadcrumbs` empties the trail of
+the innermost running request, job or transaction, so cleared crumbs leave that
+line too. Unlike sentry-ruby, this includes a clear inside `with_scope` or a
+capture block. A capture in a `rescue_from` handler carries the action's
+breadcrumbs up to the raise, then the handler's own. A child span becomes a
+`custom` span in the APM trace, next to the SQL and HTTP spans.
+
+The keys `controller`, `method`, `job_class` and `koderift_capture` are dropped
+from a breadcrumb's `data`, as they are from a capture's context.
 
 ### Rake tasks and cron
 
@@ -242,6 +257,7 @@ a failure carry (see [Using with sentry-ruby](#using-with-sentry-ruby)).
 ```ruby
 Koderift::Rails.configure do |config|
   config.max_captures_per_minute = 100          # nil to disable the cap
+  config.max_breadcrumbs         = 20           # per line and per capture; nil for no cap
   config.sample_rate             = 1.0
   config.excluded_exceptions     = %w[ActiveRecord::RecordNotFound]
   config.before_send             = ->(payload, hint) { payload }   # nil to drop

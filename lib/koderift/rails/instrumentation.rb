@@ -4,6 +4,7 @@ require 'time'
 require 'active_support/core_ext/string/filters'
 require 'koderift/rails/frame_stack'
 require 'koderift/rails/trace_context'
+require 'koderift/rails/breadcrumb'
 
 module Koderift
   module Rails
@@ -141,6 +142,16 @@ module Koderift
         CAPTURES.pop(state[:frame]) if state.is_a?(Hash) && state[:frame]
       end
 
+      # build_result that never raises: nil when the result can't be built.
+      # A bug here must not fail the request or job it describes, nor
+      # replace the exception that is already on its way out of one. With
+      # nil the line goes out without spans or counts.
+      def self.result_for(state)
+        state ? build_result(state) : nil
+      rescue StandardError
+        nil
+      end
+
       def self.build_result(state)
         spans = []
 
@@ -181,7 +192,7 @@ module Koderift
           query_count:   state[:queries].size,
           partial_count: state[:partials].size,
           search_count:  state[:search_queries].size,
-          breadcrumbs:   state[:breadcrumbs].last(state[:config].max_breadcrumbs)
+          breadcrumbs:   Breadcrumbs.capped(state[:breadcrumbs])
         }
       end
 

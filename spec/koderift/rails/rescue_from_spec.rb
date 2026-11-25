@@ -33,7 +33,7 @@ RSpec.describe 'captures in rescue_from handlers' do
     koderift_trace_id koderift_context koderift_breadcrumbs koderift_custom_spans
     koderift_external_calls koderift_external_config koderift_trace_frames
     koderift_capture_frames koderift_scope_stack koderift_rescue_view
-    koderift_rescue_view_below koderift_rescue_view_context
+    koderift_rescue_view_below koderift_rescue_view_context koderift_rescue_view_crumbs
   ].freeze
 
   def thread_state(thread = Thread.current)
@@ -522,28 +522,37 @@ RSpec.describe 'captures in rescue_from handlers' do
       expect(line[:spans].map { |s| s[:name] }).to eq(['SELECT ok'])
     end
 
-    it 'a request whose error a handler took: the handler status, and no spans or counts, as in 2.3.0' do
+    # 2.4.0 (F1): an action that raised keeps its spans, counts and crumbs up
+    # to the raise, and a line a handler took names the class it rescued.
+    it 'a request whose error a handler took: the handler status, the spans and counts up to the raise, and rescued' do
       status, payload = dispatch(lined, :boom)
       line = lograge_line(payload)
 
       expect(status).to eq(422)
       expect(payload[:status]).to eq(422)
-      expect(line.keys).to eq(%i[user_id host request_id trace_id span_id started_at ip params])
-      expect(shape(line)).to eq(
-        user_id: 42, host: 'example.org', request_id: 'req-1', trace_id: :trace, span_id: :span,
-        started_at: :time, ip: '', params: {}
+      expect(line.keys).to eq(%i[user_id host rescued request_id trace_id span_id started_at ip breadcrumbs params
+                                 spans query_count partial_count search_count])
+      expect(shape(line).except(:breadcrumbs, :spans)).to eq(
+        user_id: 42, host: 'example.org', rescued: 'ArgumentError', request_id: 'req-1', trace_id: :trace,
+        span_id: :span, started_at: :time, ip: '', params: {}, query_count: 1, partial_count: 0, search_count: 0
       )
+      expect(line[:spans].map { |s| s[:name] }).to eq(['SELECT widgets'])
+      expect(line[:breadcrumbs].map { |c| c[:message] }).to eq(['SELECT widgets'])
     end
 
-    it 'an unhandled error: as in 2.3.0' do
+    it 'an unhandled error: the exception, and the spans and counts up to the raise' do
       status, payload = dispatch(lined, :unhandled)
       line = lograge_line(payload)
 
       expect(status).to be_a(RescueFromSpecWrapperError)
       expect(payload[:status]).to eq(500)
-      expect(line.keys).to eq(%i[user_id host exception request_id trace_id span_id started_at ip stack_trace params])
+      expect(line.keys).to eq(%i[user_id host exception request_id trace_id span_id started_at ip stack_trace
+                                 breadcrumbs params spans query_count partial_count search_count])
       expect(line[:exception]).to eq('RescueFromSpecWrapperError: nobody handles me')
-      expect(line).not_to include(:spans, :query_count, :breadcrumbs)
+      expect(line).not_to have_key(:rescued)
+      expect(line.slice(:query_count, :partial_count, :search_count)).to eq(query_count: 1, partial_count: 0,
+                                                                              search_count: 0)
+      expect(line[:spans].map { |s| s[:name] }).to eq(['SELECT unhandled'])
     end
   end
 

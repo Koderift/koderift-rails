@@ -22,16 +22,24 @@ module Koderift
         trace_frame   = start_trace(job, started_at_ms)
         trace         = trace_fields(trace_frame)
 
+        state = start_capture(started_at_ms)
         begin
-          result = Instrumentation.capture(started_at_ms: started_at_ms) { yield }
+          begin
+            value = yield
+          ensure
+            stop_capture(state)
+          end
           duration_ms = (TraceContext.now_ms - started_at_ms).round
-          emit_job_log(worker, job, queue, result, duration_ms, trace, error: nil)
-          result
+          emit_job_log(worker, job, queue, Instrumentation.result_for(state) || NO_RESULT,
+                       duration_ms, trace, error: nil)
+          value
         rescue StandardError => e
+          # A failed attempt's line keeps the spans, counts and breadcrumbs it
+          # recorded before the raise (2.4.0; before, it said 0). Building
+          # them never replaces the job's own exception.
           duration_ms = (TraceContext.now_ms - started_at_ms).round
-          empty_result = { spans: [], query_count: 0, partial_count: 0,
-                           search_count: 0, breadcrumbs: [] }
-          emit_job_log(worker, job, queue, empty_result, duration_ms, trace, error: e)
+          emit_job_log(worker, job, queue, Instrumentation.result_for(state) || NO_RESULT,
+                       duration_ms, trace, error: e)
           raise
         ensure
           # sentry-sidekiq reports a failure from Sidekiq's error handlers,
@@ -52,6 +60,23 @@ module Koderift
       end
 
       private
+
+      # With no result (the capture failed to start, or its result to build)
+      # the line leaves spans and counts out rather than reporting 0.
+      NO_RESULT = {}.freeze
+
+      # A failure here costs the job its spans, never the job.
+      def start_capture(started_at_ms)
+        Instrumentation.start_capture(started_at_ms: started_at_ms)
+      rescue StandardError
+        nil
+      end
+
+      def stop_capture(state)
+        Instrumentation.stop_capture(state) if state
+      rescue StandardError
+        nil
+      end
 
       # Continues the trace the client middleware stored on the job, else the
       # legacy trace ID key, else starts one (TraceContext.from_job).

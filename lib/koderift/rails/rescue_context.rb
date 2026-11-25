@@ -46,11 +46,15 @@ module Koderift
     # * the request's scope, kept by `keep` when the action raised. When the
     #   handler ends the scope is reset, as at the end of a request, so a tag
     #   or crumb set in a handler never reaches the next request on the
-    #   thread.
+    #   thread;
+    # * the action's breadcrumbs as the request line carries them, up to the
+    #   raise (2.4.0), kept the same way and held in a private thread key
+    #   while the handler runs. Capture puts them before the handler's own.
     module RescueContext
       VIEW_KEY         = :koderift_rescue_view
       VIEW_BELOW_KEY   = :koderift_rescue_view_below
       VIEW_CONTEXT_KEY = :koderift_rescue_view_context
+      VIEW_CRUMBS_KEY  = :koderift_rescue_view_crumbs
 
       # The ambient context a live unit publishes (Capture::CONTEXT_KEY).
       CONTEXT_KEY = :koderift_context
@@ -61,7 +65,8 @@ module Koderift
       # second controller on the same env never sees it, and the handler that
       # reads it removes it, so neither does a controller the router falls
       # through to (X-Cascade) with the same Request.
-      KEPT_SCOPE_IVAR = :@koderift_rescue_scope
+      KEPT_SCOPE_IVAR  = :@koderift_rescue_scope
+      KEPT_CRUMBS_IVAR = :@koderift_rescue_crumbs
 
       ENV_TRACE_ID = 'koderift.trace_id'
       ENV_SPAN_ID  = 'koderift.span_id'
@@ -84,9 +89,12 @@ module Koderift
         end
 
         # From the around_action's ensure, only when the action raised, and
-        # before the scope is reset.
-        def keep(request)
+        # before the scope is reset. crumbs: the trail the request line
+        # carries, which stops at the raise.
+        def keep(request, crumbs = nil)
           request.instance_variable_set(KEPT_SCOPE_IVAR, Thread.current[Scope::STACK_KEY])
+          request.instance_variable_set(KEPT_CRUMBS_IVAR, crumbs) if crumbs
+          nil
         rescue StandardError
           nil
         end
@@ -109,16 +117,43 @@ module Koderift
               view_before    = thread[VIEW_KEY]
               vbelow_before  = thread[VIEW_BELOW_KEY]
               context_before = thread[VIEW_CONTEXT_KEY]
+              vcrumbs_before = thread[VIEW_CRUMBS_KEY]
               outer          = !below.nil? || !thread[CONTEXT_KEY].nil? || !view_before.nil?
               opened         = true
               publish(controller, below)
             end
           rescue StandardError
-            close(scope_before, crumbs_before, view_before, vbelow_before, context_before, outer) if opened
+            if opened
+              close(scope_before, crumbs_before, view_before, vbelow_before, context_before, vcrumbs_before, outer)
+            end
           end
           yield
         ensure
-          close(scope_before, crumbs_before, view_before, vbelow_before, context_before, outer) if opened
+          close(scope_before, crumbs_before, view_before, vbelow_before, context_before, vcrumbs_before, outer) if opened
+        end
+
+        # Whether this call comes from inside the controller's own action (its
+        # context is live), as an app's explicit rescue_with_handler does.
+        def inside_action?(controller)
+          live = Thread.current[CONTEXT_KEY]
+          live.is_a?(Hash) && live[:controller_instance].equal?(controller) ? true : false
+        rescue StandardError
+          false
+        end
+
+        # For the `rescued` marker only: the call comes from inside this
+        # controller's action, also under a transaction or an inline job the
+        # action started (their own context is on top). opens? keeps the
+        # narrower inside_action?, so a handler called there still pairs.
+        def inside_own_request?(controller)
+          return true if inside_action?(controller)
+
+          TraceContext::Current::STACK.any? do |frame|
+            frame.kind == :request && frame.context.is_a?(Hash) &&
+              frame.context[:controller_instance].equal?(controller)
+          end
+        rescue StandardError
+          false
         end
 
         # The controller whose handler is running, while nothing started in
@@ -153,12 +188,29 @@ module Koderift
           nil
         end
 
+        # The action's crumbs while the view is in force, else nil.
+        def crumbs
+          current ? Thread.current[VIEW_CRUMBS_KEY] : nil
+        rescue StandardError
+          nil
+        end
+
+        # Breadcrumbs.clear in a handler clears the action's crumbs too.
+        def clear_crumbs
+          list = Thread.current[VIEW_CRUMBS_KEY]
+          list.clear if list.is_a?(Array)
+          nil
+        rescue StandardError
+          nil
+        end
+
         # Specs only.
         def clear!
           thread = Thread.current
           thread[VIEW_KEY]         = nil
           thread[VIEW_BELOW_KEY]   = nil
           thread[VIEW_CONTEXT_KEY] = nil
+          thread[VIEW_CRUMBS_KEY]  = nil
         end
 
         private
@@ -170,8 +222,7 @@ module Koderift
           thread = Thread.current
           return false if thread[VIEW_KEY].equal?(controller)
 
-          live = thread[CONTEXT_KEY]
-          return false if live.is_a?(Hash) && live[:controller_instance].equal?(controller)
+          return false if inside_action?(controller)
 
           frame = TraceContext::Current.frame
           !(frame && frame.kind == :job)
@@ -184,6 +235,9 @@ module Koderift
           if request.instance_variable_defined?(KEPT_SCOPE_IVAR)
             thread[Scope::STACK_KEY] = request.remove_instance_variable(KEPT_SCOPE_IVAR)
           end
+          thread[VIEW_CRUMBS_KEY] = if request.instance_variable_defined?(KEPT_CRUMBS_IVAR)
+                                      request.remove_instance_variable(KEPT_CRUMBS_IVAR)
+                                    end
           # With no capture open, a crumb added in the handler would land in a
           # plain thread-local nothing else clears. Start it empty; close puts
           # back what was there.
@@ -214,11 +268,12 @@ module Koderift
         # scope is reset. A transaction holds what the thread published when
         # it started as `outside`; left here, a later finish would publish it
         # again into whatever request runs then.
-        def close(scope_before, crumbs_before, view_before, vbelow_before, context_before, outer)
+        def close(scope_before, crumbs_before, view_before, vbelow_before, context_before, vcrumbs_before, outer)
           thread = Thread.current
           thread[VIEW_KEY]         = view_before
           thread[VIEW_BELOW_KEY]   = vbelow_before
           thread[VIEW_CONTEXT_KEY] = context_before
+          thread[VIEW_CRUMBS_KEY]  = vcrumbs_before
           unless outer
             TraceContext::Current.clear! unless TraceContext::Current.frame.nil?
             Instrumentation.clear_captures! if capturing?

@@ -6,6 +6,83 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.4.0] - 2026-11-24
+
+A request or job that raises keeps what it recorded before the raise, so its
+trace shows the queries that led to the error.
+
+### Fixed
+- The request line of an action that raised carries its `spans`,
+  `query_count`, `partial_count`, `search_count` and `breadcrumbs` up to the
+  raise, whether a `rescue_from` handler took the error or not. Before, it had
+  none of them, so the counts were stored as 0. The caps are the same as on a
+  successful request. Queries and renders in the handler itself are not
+  recorded, as before.
+- A failed Sidekiq job's line carries that attempt's spans, counts and
+  breadcrumbs. Before, it reported none and counts of 0. Its keys are
+  unchanged.
+- A capture in a `rescue_from` handler carries the action's breadcrumbs up to
+  the raise, then the handler's own, capped at `max_breadcrumbs`.
+  `before_send` sees all of them. A handler that clears breadcrumbs clears them
+  from its captures, not from the request line. There are none of the action's
+  for an exception raised after the gem's hook has finished, and a controller
+  run inside a Sidekiq job keeps the job's trail, as in 2.3.1.
+- A failure inside the gem while it starts or stops a request's or job's
+  capture, or builds its result, no longer fails a request or job that
+  succeeded, and never replaces the exception of one that failed. Without a
+  result the line goes out without spans.
+- `config.max_breadcrumbs` set to `nil` or `Float::INFINITY` (no cap), or to a
+  String such as `"20"`, no longer makes every request and job fail, nor drops
+  transaction lines. A value that is not a number falls back to 20. Zero or
+  less keeps none, as zero always did. Breadcrumbs added outside a request or
+  job are trimmed by the same rule.
+- Spans and breadcrumbs are no longer left in `request.env`, where tools that
+  dump the env (exception_notification) printed them, SQL literals included.
+  Only the trace keys stay there.
+- `Scope#clear_breadcrumbs` empties the trail of the innermost running
+  request, job or transaction in place. Crumbs an action clears no longer go
+  out on its request line, and SQL recorded after the clear still reaches
+  captures. Before, the cleared crumbs stayed on the line, and later SQL never
+  reached captures.
+  - Unlike sentry-ruby, a clear inside `with_scope` or a capture block clears
+    that trail too, not only the one event's.
+  - A clear inside a transaction, an inline job or a handler clears that
+    unit's trail and leaves the request line's.
+- A capture's breadcrumbs are capped at `max_breadcrumbs`, as the request
+  line's are. Before, a capture late in a long action carried every SQL crumb.
+- The keys `controller`, `method`, `job_class` and `koderift_capture` are
+  dropped from a breadcrumb's `data` (Hashes and Arrays, at any depth). The
+  first three were already dropped from a capture's context. The Koderift agent
+  looks for those keys anywhere in a line, so one inside a crumb could make it
+  misread or drop the whole line. Data that refers back to itself no longer
+  raises from `add_breadcrumb`.
+- `SidekiqMiddleware` returns the job's own value. Before, it returned the
+  capture's result, which Sidekiq's `perform_inline` checks.
+
+### Added
+- `rescued` on the request line when a `rescue_from` handler took the
+  exception: the exception's class. When a handler passes another error to
+  `rescue_with_handler`, the outermost one is named. An explicit
+  `rescue_with_handler` called inside the action adds nothing.
+
+### Changed
+- An errored line is larger. In a test app, without the stack trace, it was
+  about 1.9 KB with 5 queries, 10.5 KB with 50 and 78 KB with 500, against
+  about 0.4 KB before. Longer SQL makes it larger. A failed job writes one line
+  for each attempt.
+- Successful request and job lines are unchanged, except for the
+  breadcrumb fixes above.
+- A request that ends in `throw` instead of an exception, such as Warden's 401
+  from Devise's `authenticate_user!`, carries the spans, counts and breadcrumbs
+  it recorded before the throw, as an action that raised does. Rails logs no
+  status for these, as before.
+- A `before_send` that edits breadcrumb Hashes in place also edits the request
+  line written after it, as before. That now includes a handler's captures on
+  an errored request.
+
+### Development
+- `spec/koderift/rails/errored_units_spec.rb`.
+
 ## [2.3.1] - 2026-11-24
 
 Captures in `rescue_from` handlers keep their request, so an error a handler

@@ -27,6 +27,7 @@ module Koderift
             host:          event.payload[:koderift_host],
             db:            event.payload[:db_runtime]&.round(2),
             exception:     event.payload[:exception]&.join(': '),
+            rescued:       event.payload[:koderift_rescued],
             request_id:    event.payload[:koderift_request_id],
             trace_id:      event.payload[:koderift_trace_id],
             span_id:        event.payload[:koderift_span_id],

@@ -293,8 +293,8 @@ module Koderift
             component: component, action: action, user_id: user_id
           )
 
-          crumbs = Breadcrumbs.current
-          payload[:breadcrumbs] = crumbs unless crumbs.empty?
+          trail = breadcrumb_trail
+          payload[:breadcrumbs] = trail unless trail.empty?
 
           payload = run_before_send(payload.compact, hint)
           return nil if payload.nil?
@@ -306,6 +306,19 @@ module Koderift
 
           Event.new(event_id: event_id, level: normalised, message: message.to_s,
                     exception: exception, timestamp: Time.now.utc.iso8601)
+        end
+
+        # The crumbs a capture carries, capped at config.max_breadcrumbs (as
+        # the request line's are). In a rescue_from handler the action's
+        # crumbs, as they stood at the raise, come first (RescueContext). Set
+        # before before_send runs, so an app's scrubbing sees all of them.
+        def breadcrumb_trail
+          crumbs = Breadcrumbs.current
+          action = RescueContext.crumbs
+          crumbs = action + crumbs if action.is_a?(Array) && !action.empty?
+          Breadcrumbs.capped(crumbs)
+        rescue StandardError
+          []
         end
 
         # `koderift_capture` is deliberately the FIRST key: it lets the agent's

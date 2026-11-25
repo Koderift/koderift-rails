@@ -12,6 +12,14 @@ module Koderift
     module Controller
       extend ActiveSupport::Concern
 
+      # Per-request values kept on the ActionDispatch::Request, never in
+      # request.env: env dumps (exception_notification) print every value, and
+      # these hold SQL. Rails builds a Request per dispatch; each reader
+      # removes its own, so a controller the router falls through to with the
+      # same Request (X-Cascade) sees none of them.
+      KODERIFT_RESULT_IVAR  = :@koderift_result
+      KODERIFT_RESCUED_IVAR = :@koderift_rescued
+
       included do
         around_action :koderift_instrument_request
       end
@@ -19,11 +27,28 @@ module Koderift
       # ActionController::Rescue calls this after the around_action below has
       # finished, so a capture in the handler would otherwise have no request
       # context. See RescueContext. Public, as ActiveSupport::Rescuable's is.
+      #
+      # When a handler took the exception, the request line says which class
+      # (`rescued`), because nothing else on it shows that the action raised:
+      # its counts stop at the raise, and a raise before the hook has none.
+      # Not for an explicit call from inside the action, whose line is the
+      # action's own. A handler that passes another error on is marked by the
+      # outermost call, which returns last.
       def rescue_with_handler(exception)
-        Koderift::Rails::RescueContext.around(self) { super }
+        inside  = Koderift::Rails::RescueContext.inside_own_request?(self)
+        handled = Koderift::Rails::RescueContext.around(self) { super }
+        koderift_mark_rescued(handled, exception) if handled && !inside
+        handled
       end
 
       private
+
+      def koderift_mark_rescued(handled, exception)
+        name = (handled.is_a?(Exception) ? handled : exception).class.name
+        request.instance_variable_set(KODERIFT_RESCUED_IVAR, name) if name
+      rescue StandardError
+        nil
+      end
 
       def koderift_instrument_request
         Koderift::Rails::SentryBridge.install_if_ready
@@ -38,21 +63,28 @@ module Koderift
         context = Koderift::Rails::RescueContext.context_for(self)
 
         trace_frame = koderift_start_trace(context, started_at_ms)
+        state       = koderift_start_capture(started_at_ms)
 
-        result = Koderift::Rails::Instrumentation.capture(started_at_ms: started_at_ms) do
+        # The capture's result is built whether or not the action raises, so
+        # the request line of an action that raised, handled or not, keeps its
+        # spans, counts and breadcrumbs up to the raise.
+        # Nothing is rescued here: the exception passes through untouched.
+        begin
           yield
+          finished = true
+        ensure
+          result = koderift_finish_capture(state)
         end
-        finished = true
-
-        request.env['koderift.spans']         = result[:spans]
-        request.env['koderift.query_count']   = result[:query_count]
-        request.env['koderift.partial_count'] = result[:partial_count]
-        request.env['koderift.search_count']  = result[:search_count]
-        request.env['koderift.breadcrumbs']   = result[:breadcrumbs]
       ensure
         # A rescue_from handler for this exception runs after this ensure, so
-        # the request's scope is kept for it before the reset below.
-        Koderift::Rails::RescueContext.keep(request) unless finished
+        # the request's scope is kept for it before the reset below, with the
+        # trail the line carries (the request's own, not a transaction left
+        # open on top of it). A copy, so a handler that clears breadcrumbs
+        # does not change the line.
+        unless finished
+          crumbs = result && result[:breadcrumbs]
+          Koderift::Rails::RescueContext.keep(request, crumbs.is_a?(Array) ? crumbs.dup : nil)
+        end
         if trace_frame
           # Clears the trace ID and capture context, and anything a nested
           # transaction left behind.
@@ -65,6 +97,38 @@ module Koderift
         # one user's request would silently attach to the next request served
         # by the same thread.
         Koderift::Rails::Scope.reset!
+      end
+
+      # A failure here costs the request its spans, never the request.
+      def koderift_start_capture(started_at_ms)
+        Koderift::Rails::Instrumentation.start_capture(started_at_ms: started_at_ms)
+      rescue StandardError
+        nil
+      end
+
+      # Stops the capture and keeps its result on the Request for the request
+      # line (append_info_to_payload); returns it. Runs in an ensure while an
+      # exception may be on its way out, so nothing here may raise or replace
+      # it.
+      def koderift_finish_capture(state)
+        return nil if state.nil?
+
+        begin
+          Koderift::Rails::Instrumentation.stop_capture(state)
+        rescue StandardError
+          nil
+        end
+        result = Koderift::Rails::Instrumentation.result_for(state)
+        request.instance_variable_set(KODERIFT_RESULT_IVAR, result) if result
+        result
+      rescue StandardError
+        nil
+      end
+
+      def koderift_take(ivar)
+        request.instance_variable_defined?(ivar) ? request.remove_instance_variable(ivar) : nil
+      rescue StandardError
+        nil
       end
 
       # Continues the caller's trace (see TraceContext.incoming for the header
@@ -122,11 +186,13 @@ module Koderift
         payload[:koderift_started_at]     = request.env['koderift.started_at']
         payload[:koderift_referer]      = request.referer
         payload[:koderift_params]       = filtered_params.to_h
-        payload[:koderift_spans]         = request.env['koderift.spans']
-        payload[:koderift_query_count]   = request.env['koderift.query_count']
-        payload[:koderift_partial_count] = request.env['koderift.partial_count']
-        payload[:koderift_search_count]  = request.env['koderift.search_count']
-        payload[:koderift_breadcrumbs]   = request.env['koderift.breadcrumbs']
+        result = koderift_take(KODERIFT_RESULT_IVAR) || {}
+        payload[:koderift_spans]         = result[:spans]
+        payload[:koderift_query_count]   = result[:query_count]
+        payload[:koderift_partial_count] = result[:partial_count]
+        payload[:koderift_search_count]  = result[:search_count]
+        payload[:koderift_breadcrumbs]   = result[:breadcrumbs]
+        payload[:koderift_rescued]       = koderift_take(KODERIFT_RESCUED_IVAR)
       end
     end
   end
