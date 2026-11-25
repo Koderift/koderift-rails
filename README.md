@@ -209,9 +209,10 @@ Koderift.with_child_span(op: "stripe", description: "charge") do |span|
 end
 ```
 
-Scope is per-thread and reset at the end of every request and job. Breadcrumbs
-interleave with the SQL and render crumbs the gem already collects. A child span
-becomes a `custom` span in the APM trace, next to the SQL and HTTP spans.
+Scope is per-thread and reset at the end of every request (after any
+`rescue_from` handler) and job. Breadcrumbs interleave with the SQL and render
+crumbs the gem already collects. A child span becomes a `custom` span in the
+APM trace, next to the SQL and HTTP spans.
 
 ### Rake tasks and cron
 
@@ -335,6 +336,16 @@ where the gem left it.
 
 An event whose key names another request or job gets no tags.
 
+**`rescue_from` handlers.** Rails runs a controller's `rescue_from` handler
+after the gem has finished with the request. `Koderift.capture_exception` and
+`capture_message` in the handler still carry the request's ID, user and trace,
+as they do in the action, so they pair with Sentry's event from the same
+handler. sentry-rails doesn't report an exception a handler rescued, so that
+event is the handler's own `Sentry.capture_exception`. One with no request ID
+of its own gets the request's. A handler in a controller that a Sidekiq job
+dispatches in-process keeps the job's context instead, because sentry-sidekiq
+tags every event in the job with its jid and Koderift pairs on the jid first.
+
 **Rake.** Each rake run gets one request ID, a UUID. Three things carry it:
 
 * the gem's capture line for an uncaught failure;
@@ -362,12 +373,14 @@ end
 Limits:
 
 * An event with no request ID or jid of its own, captured after its request or
-  job has finished, gets no tags.
+  job has finished (outside a `rescue_from` handler), gets no tags.
 * A capture inside `Koderift.start_transaction` carries the transaction's own
-  request ID, not the request's or job's.
-* `Koderift.capture_exception` inside a `rescue_from` handler runs after the
-  request's context has closed, so its line has no `request_id`. Sentry's event
-  from the same handler has one, so that pair still counts twice.
+  request ID, not the request's or job's, except in a `rescue_from` handler
+  called inside it.
+* A `rescue_from` handler for an exception raised before the gem's hook runs
+  (Rails' default CSRF check, a `prepend_before_action`, or a controller that
+  skips the hook) gets the request ID and user but no trace. The request line
+  has no trace either.
 * Under Spring, a rake command usually computes its run ID in the forked
   command, but if the preloaded app worked it out first, every command it forks
   goes without one.

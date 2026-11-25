@@ -2,6 +2,7 @@
 
 require 'securerandom'
 require 'koderift/rails/trace_context'
+require 'koderift/rails/rescue_context'
 
 module Koderift
   module Rails
@@ -24,7 +25,8 @@ module Koderift
     #
     # 1. A unit live on this thread whose request ID is the event's key, or
     #    any live unit when the event has no key. This is what the gem's own
-    #    capture line at the same point carries.
+    #    capture line at the same point carries. Inside a controller's
+    #    rescue_from handler the request counts as live (RescueContext).
     # 2. A job key (jid, provider_job_id): the job that last finished on this
     #    thread, when its jid is the key and Sentry reports on the hub that
     #    job ran on. sentry-sidekiq reports from Sidekiq's error handlers,
@@ -134,13 +136,21 @@ module Koderift
           job_key = key_value(tags, 'jid', :jid) || key_value(tags, 'provider_job_id', :provider_job_id)
           key     = job_key || key_value(tags, 'request_id', :request_id)
           thread  = Thread.current
-          context = thread[CONTEXT_KEY]
+          handler = RescueContext.current
+          context = handler ? RescueContext.context : thread[CONTEXT_KEY]
           live    = context.is_a?(Hash) ? present_string(context[:request_id]) : nil
 
           if context.is_a?(Hash) && (key.nil? || key == live)
             request_id = live
-            trace_id   = TraceContext::Current.trace_id
-            span_id    = TraceContext::Current.current_span_id
+            if handler
+              # A rescue_from handler: the request has closed, and the trace
+              # and span are the ones its request line carries.
+              trace_id = RescueContext.trace_id(handler)
+              span_id  = RescueContext.span_id(handler)
+            else
+              trace_id = TraceContext::Current.trace_id
+              span_id  = TraceContext::Current.current_span_id
+            end
           elsif job_key
             return unless job_key == thread[CLOSED_JID]
 

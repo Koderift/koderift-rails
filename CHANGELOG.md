@@ -6,6 +6,70 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before 1.3.4 were installed from git and were never published to
 RubyGems; they are listed for continuity.
 
+## [2.3.1] - 2026-11-24
+
+Captures in `rescue_from` handlers keep their request, so an error a handler
+reports both ways counts once.
+
+### Fixed
+- `Koderift.capture_exception` and `capture_message` in a controller's
+  `rescue_from` handler carry the request's `request_id`, `component`, `action`,
+  `path`, `http_method` and user, and the `trace_id` and `span_id` its request
+  line carries, as a capture in the action does. Rails runs the handler after
+  the gem has finished with the request, so these captures used to have none of
+  them. Sentry's event from the same handler has the request ID, so that pair
+  counted twice.
+  - This covers handlers on a parent controller, in a concern, on
+    `ActionController::API` and in `ActionController::Live` controllers. It
+    also covers a handler found through the exception's cause, and a handler
+    that calls `rescue_with_handler` itself.
+  - When the action, or a callback inside the gem's hook, raised, the handler
+    sees the scope the action had: `Koderift.set_user`, tags and extras set in
+    the action or its callbacks.
+  - A transaction started in the handler carries its own context inside it, as
+    in an action.
+  - Some exceptions are raised before the gem's hook runs: Rails' default CSRF
+    check, a `prepend_before_action`, or a controller that skips the hook. For
+    those the capture has the request ID and user and no trace, as the request
+    line does.
+- A tag, user or breadcrumb set in a `rescue_from` handler no longer reaches
+  the next request served by the same thread.
+- A non-block transaction a handler starts and never finishes has its frames
+  dropped when the handler ends, as one the action leaves open does at the end
+  of the request. Before, a later `start_transaction` on the thread could cut
+  the next request's context and trace short. The abandoned transaction's own
+  line is still written when a later one finishes it.
+- A transaction an earlier request left open, finished from a later request's
+  `rescue_from` handler, takes none of that request's user, path or scope.
+
+### Changed
+- With the sentry-ruby bridge, a Sentry event captured in a `rescue_from`
+  handler with no `request_id` of its own (no Rack env) gets the request's
+  `request_id`, and, when the request line has a trace, its
+  `koderift_trace_id` and `koderift_span_id`. Events that carry sentry-rails'
+  `request_id` get the same tags as before.
+- A handler in a controller that a Sidekiq job dispatches in-process keeps the
+  job's context, as before. sentry-sidekiq tags every event in the job with its
+  jid, which Koderift pairs on first, so the handler's report still pairs.
+- Errors reported from `rescue_from` handlers now group by controller and
+  action. Before, every handler report of one exception class shared one group
+  with no controller. After the upgrade that group stops growing and one group
+  per controller and action appears, which a deploy's impact view shows as new
+  errors.
+- Rails 8.1: a capture made in a `rescue_from_callback.action_controller`
+  subscriber carries the request.
+- Request lines are unchanged. On a request a handler took, lograge's
+  `allocations` count can be slightly higher.
+- Outbound HTTP calls, jobs enqueued and transactions started in a handler
+  still don't join the request's trace.
+
+### Development
+- `spec/koderift/rails/rescue_from_spec.rb` and
+  `spec_sentry/rescue_from_bridge_spec.rb`.
+- `spec/fixtures/sentry_bridge/` gains `rescue_from` and `rescue_from_csrf`, a
+  Sentry envelope and the log lines for each, from the same Rails 8.1 app on
+  2.3.1.
+
 ## [2.3.0] - 2026-11-23
 
 Works alongside sentry-ruby. Sentry's error events now carry the keys Koderift

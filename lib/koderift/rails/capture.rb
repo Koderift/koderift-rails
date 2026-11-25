@@ -8,6 +8,7 @@ require 'koderift/rails/breadcrumb'
 require 'koderift/rails/lograge_config'
 require 'koderift/rails/trace_context'
 require 'koderift/rails/sentry_bridge'
+require 'koderift/rails/rescue_context'
 
 module Koderift
   module Rails
@@ -190,9 +191,13 @@ module Koderift
         # Emits a finished transaction (see Tracing::Transaction#finish). Not
         # sampled: sample_rate is Sentry's ERROR sample rate, and silently
         # dropping units of work would make the APM view lie about throughput.
+        #
+        # detached: the transaction was abandoned by an earlier unit and is
+        # finished from a rescue_from handler, so it takes no ambient request
+        # or scope (see Tracing::Transaction#finished_in_another_handler?).
         def transaction(component:, action:, message:, duration_ms:, request_id:,
                         trace_id:, result:, level: 'info', span_id: nil,
-                        parent_span_id: nil, started_at: nil)
+                        parent_span_id: nil, started_at: nil, detached: false)
           return nil unless initialized?
 
           allowed, warning = rate_limiter.allow(configuration.max_captures_per_minute)
@@ -205,7 +210,8 @@ module Koderift
           payload = base_payload(
             event_id: event_id, level: normalised, exception: nil, message: message,
             stack_trace: nil, error_cause: nil, tags: nil, extra: nil, user: nil,
-            contexts: nil, component: component, action: action, user_id: nil
+            contexts: nil, component: component, action: action, user_id: nil,
+            detached: detached
           ).merge(
             duration:      duration_ms,
             spans:         result[:spans],
@@ -305,12 +311,30 @@ module Koderift
         # `koderift_capture` is deliberately the FIRST key: it lets the agent's
         # marker regex match on the shortest possible prefix, and it keeps the
         # line self-identifying for anyone reading the raw log.
+        #
+        # Inside a controller's rescue_from handler the request has already
+        # closed, and its view (RescueContext) stands in for the live context:
+        # the request's own context, and the trace and span its request line
+        # carries.
         def base_payload(event_id:, level:, exception:, message:, stack_trace:,
                          error_cause:, tags:, extra:, user:, contexts:,
-                         component:, action:, user_id:)
-          scope   = Scope.current
-          context = Thread.current[CONTEXT_KEY]
+                         component:, action:, user_id:, detached: false)
+          scope   = detached ? Scope.new : Scope.current
+          handler = detached ? nil : RescueContext.current
+          context = if detached
+                      RescueContext::EMPTY_CONTEXT
+                    else
+                      handler ? RescueContext.context : Thread.current[CONTEXT_KEY]
+                    end
           ambient = context || {}
+
+          if handler
+            trace_id = RescueContext.trace_id(handler)
+            span_id  = RescueContext.span_id(handler)
+          else
+            trace_id = Thread.current[:koderift_trace_id]
+            span_id  = TraceContext::Current.current_span_id
+          end
 
           merged_user = scope.user.merge(stringify(user))
 
@@ -324,8 +348,8 @@ module Koderift
             component:        presence(component || scope.component || ambient[:component]),
             action:           presence(action || scope.action || ambient[:action]),
             request_id:       presence(ambient[:request_id]) || outside_unit_request_id(context),
-            trace_id:         presence(Thread.current[:koderift_trace_id]),
-            span_id:          presence(TraceContext::Current.current_span_id),
+            trace_id:         presence(trace_id),
+            span_id:          presence(span_id),
             user_id:          presence(resolve_user_id(user_id, merged_user, ambient)),
             path:             presence(ambient[:path]),
             http_method:      presence(ambient[:http_method]),

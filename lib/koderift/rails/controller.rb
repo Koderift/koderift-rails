@@ -5,6 +5,7 @@ require 'koderift/rails/trace_context'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/scope'
 require 'koderift/rails/sentry_bridge'
+require 'koderift/rails/rescue_context'
 
 module Koderift
   module Rails
@@ -13,6 +14,13 @@ module Koderift
 
       included do
         around_action :koderift_instrument_request
+      end
+
+      # ActionController::Rescue calls this after the around_action below has
+      # finished, so a capture in the handler would otherwise have no request
+      # context. See RescueContext. Public, as ActiveSupport::Rescuable's is.
+      def rescue_with_handler(exception)
+        Koderift::Rails::RescueContext.around(self) { super }
       end
 
       private
@@ -27,20 +35,14 @@ module Koderift
         # request it happened inside. The controller instance is kept so
         # config.current_user can be resolved at capture time rather than eagerly
         # on every request that never captures anything.
-        context = {
-          component:           self.class.name,
-          action:              action_name,
-          request_id:          request.request_id,
-          path:                request.path,
-          http_method:         request.request_method,
-          controller_instance: self
-        }
+        context = Koderift::Rails::RescueContext.context_for(self)
 
         trace_frame = koderift_start_trace(context, started_at_ms)
 
         result = Koderift::Rails::Instrumentation.capture(started_at_ms: started_at_ms) do
           yield
         end
+        finished = true
 
         request.env['koderift.spans']         = result[:spans]
         request.env['koderift.query_count']   = result[:query_count]
@@ -48,6 +50,9 @@ module Koderift
         request.env['koderift.search_count']  = result[:search_count]
         request.env['koderift.breadcrumbs']   = result[:breadcrumbs]
       ensure
+        # A rescue_from handler for this exception runs after this ensure, so
+        # the request's scope is kept for it before the reset below.
+        Koderift::Rails::RescueContext.keep(request) unless finished
         if trace_frame
           # Clears the trace ID and capture context, and anything a nested
           # transaction left behind.

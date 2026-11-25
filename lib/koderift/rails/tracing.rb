@@ -5,6 +5,7 @@ require 'securerandom'
 require 'koderift/rails/trace_context'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/capture'
+require 'koderift/rails/rescue_context'
 
 module Koderift
   module Rails
@@ -110,7 +111,8 @@ module Koderift
             span_id:        @span_id,
             parent_span_id: @parent_span_id,
             started_at:     @started_at,
-            result:         result
+            result:         result,
+            detached:       finished_in_another_handler?
           )
         rescue StandardError
           nil
@@ -133,6 +135,17 @@ module Koderift
         end
 
         private
+
+        # An abandoned transaction (its frames dropped at the end of the unit
+        # it began in) finished from a later request's rescue_from handler.
+        # Its line must not take that request's user, path or scope.
+        def finished_in_another_handler?
+          return false unless @frame && RescueContext.current
+
+          !TraceContext::Current::STACK.include?(@frame)
+        rescue StandardError
+          false
+        end
 
         def push_frame(trace)
           TraceContext::Current.push(

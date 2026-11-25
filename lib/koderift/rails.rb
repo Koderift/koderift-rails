@@ -5,6 +5,7 @@ require 'koderift/rails/configuration'
 require 'koderift/rails/frame_stack'
 require 'koderift/rails/trace_context'
 require 'koderift/rails/sentry_bridge'
+require 'koderift/rails/rescue_context'
 require 'koderift/rails/instrumentation'
 require 'koderift/rails/lograge_config'
 require 'koderift/rails/event'
@@ -34,6 +35,7 @@ module Koderift
         TraceContext::Current.clear!
         Instrumentation.clear_captures!
         Breadcrumbs.clear
+        RescueContext.clear!
         RumHelper.reset_warnings!
       end
 
